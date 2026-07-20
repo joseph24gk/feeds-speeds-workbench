@@ -1,0 +1,1518 @@
+import React, { useState, useEffect, useMemo, useRef } from "react";
+
+/* ============================================================
+   SHOP DATA — generic physics fallback tables
+   All internal math is INCH. Metric is a display layer.
+   ============================================================ */
+
+const GROUPS = {
+  N1: { label: "N1 · Wrought aluminum", ex: "6061, 7075, 2024, MIC-6", sfm: [900, 1600], ipt: 0.005, uhp: 3.5, stock: [0.010, 0.015] },
+  N2: { label: "N2 · Cast aluminum (low Si)", ex: "A356, 319", sfm: [700, 1100], ipt: 0.0045, uhp: 3.0, stock: [0.010, 0.015] },
+  N3: { label: "N3 · Cast aluminum (high Si >12%)", ex: "390, A413", sfm: [400, 700], ipt: 0.004, uhp: 2.5, stock: [0.010, 0.015] },
+  N4: { label: "N4 · Brass / copper", ex: "360 brass, C110", sfm: [500, 900], ipt: 0.004, uhp: 2.2, stock: [0.008, 0.012] },
+  P1: { label: "P1 · Low-carbon / free-machining steel", ex: "1018, 12L14, A36", sfm: [400, 550], ipt: 0.004, uhp: 1.1, stock: [0.005, 0.010] },
+  P2: { label: "P2 · Medium-carbon / alloy steel", ex: "1045, 4140 ann., 4340 ann.", sfm: [325, 450], ipt: 0.0035, uhp: 1.0, stock: [0.005, 0.010] },
+  P3: { label: "P3 · Alloy steel, pre-hard (28–38 HRC)", ex: "4140HT, P20, 4340HT", sfm: [250, 350], ipt: 0.003, uhp: 0.85, stock: [0.005, 0.008] },
+  M1: { label: "M1 · Free-machining stainless", ex: "303", sfm: [300, 400], ipt: 0.0035, uhp: 0.95, stock: [0.005, 0.010] },
+  M2: { label: "M2 · Austenitic stainless", ex: "304, 316", sfm: [200, 300], ipt: 0.003, uhp: 0.85, stock: [0.005, 0.010] },
+  M3: { label: "M3 · PH / duplex stainless", ex: "17-4, 15-5, 2205", sfm: [180, 260], ipt: 0.0028, uhp: 0.8, stock: [0.004, 0.008] },
+  K1: { label: "K1 · Cast iron", ex: "Gray, ductile", sfm: [350, 500], ipt: 0.004, uhp: 1.4, stock: [0.006, 0.010] },
+  S1: { label: "S1 · Titanium alloys", ex: "Ti-6Al-4V", sfm: [150, 250], ipt: 0.0028, uhp: 0.7, stock: [0.004, 0.008] },
+  S2: { label: "S2 · Nickel superalloys", ex: "Inconel 718, 625", sfm: [70, 120], ipt: 0.0022, uhp: 0.5, stock: [0.004, 0.006] },
+  H1: { label: "H1 · Hardened steel (45–60 HRC)", ex: "D2, H13, A2 hardened", sfm: [120, 220], ipt: 0.002, uhp: 0.65, stock: [0.003, 0.005] },
+};
+
+// Drill fallback: fraction of endmill SFM, and IPR at 1/2" dia
+const DRILL = {
+  sfmFactor: 0.7,
+  iprAtHalf: { N1: 0.008, N2: 0.007, N3: 0.006, N4: 0.007, P1: 0.007, P2: 0.006, P3: 0.005, M1: 0.005, M2: 0.004, M3: 0.0035, K1: 0.008, S1: 0.003, S2: 0.002, H1: 0.002 },
+};
+
+const TOOL_TYPES = { square_endmill: "Square end mill", ball_endmill: "Ball end mill", chamfer_mill: "Chamfer mill", drill: "Drill", tap: "Tap" };
+
+// ISO 513 material-class colors (letter is standardized; sub-numbers are brand styling)
+const ISO_COLORS = { P: "#1B5FAA", M: "#D9A400", K: "#C0392B", N: "#1E8F4E", S: "#C96A1E", H: "#6E7B8A" };
+const groupColor = (g) => ISO_COLORS[g?.[0]] || "#6B7280";
+
+const FINISH_FZ_FACTOR = 0.6; // finishing chipload vs roughing
+const FINISH_SFM_FACTOR = 1.1; // slightly higher speed for finish is fine
+
+// chipload scales with diameter (baseline table is for 1/2")
+const scaleIpt = (iptAtHalf, dia) => iptAtHalf * Math.pow(Math.max(dia, 0.01) / 0.5, 0.7);
+
+/* ---------------- unit helpers ---------------- */
+const IN_MM = 25.4;
+const fmt = (v, d = 3) => (Number.isFinite(v) ? v.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: 0 }) : "—");
+
+/* display diameter as shop fraction (1/4", 3/8") when it lands on a 64th, else decimal */
+function diaLabel(d, metric) {
+  if (!Number.isFinite(d)) return "—";
+  if (metric) return fmt(d * IN_MM, 2) + " mm";
+  const n = Math.round(d * 64);
+  if (n > 0 && Math.abs(d * 64 - n) < 0.02) {
+    let num = n, den = 64;
+    while (num % 2 === 0 && den > 1) { num /= 2; den /= 2; }
+    return den === 1 ? num + '"' : num + "/" + den + '"';
+  }
+  return fmt(d, 4) + '"';
+}
+/* metric-callout tools (metric drills/taps) show mm in labels regardless of global units;
+   feeds & speeds still run/display in the global unit system — the shop-floor hybrid */
+const toolDiaLabel = (t, metric) => (t.metricTool ? fmt(t.dia * IN_MM, t.dia * IN_MM < 10 ? 2 : 1) + " mm" : diaLabel(t.dia, metric));
+function tapThreadLabel(t) {
+  if (t.type !== "tap" || !Number.isFinite(t.pitch) || t.pitch <= 0) return null;
+  if (t.metricTool) return "M" + fmt(t.dia * IN_MM, 1).replace(/\.0$/, "") + "×" + fmt(t.pitch * IN_MM, 2);
+  return diaLabel(t.dia, false) + "-" + fmt(1 / t.pitch, 0);
+}
+const toolLabel = (t, metric) => {
+  const th = tapThreadLabel(t);
+  if (th) return th + " " + (t.series || "tap");
+  const bp = [t.brand, t.pn].filter(Boolean).join(" ").trim();
+  const typeName = ({ square_endmill: "end mill", ball_endmill: "ball", chamfer_mill: "chamfer", drill: "drill", tap: "tap" })[t.type] || "tool";
+  return toolDiaLabel(t, metric) + " " + (t.series || t.name || bp || typeName);
+};
+const hasMfgData = (t) => Object.keys(t.cutting || {}).length > 0;
+const canCut = (t, grp) => !hasMfgData(t) || !!t.cutting[grp];
+
+/* ---------------- spindle power curves ---------------- */
+function availableHp(machine, rpm) {
+  if (!machine) return null;
+  const c = machine.curve;
+  if (!c || c.length < 2) return Number.isFinite(machine.hp) ? machine.hp : null;
+  const pts = [...c].sort((a, b) => a.rpm - b.rpm);
+  if (rpm <= pts[0].rpm) return pts[0].hp;
+  if (rpm >= pts[pts.length - 1].rpm) return pts[pts.length - 1].hp;
+  for (let i = 1; i < pts.length; i++) {
+    if (rpm <= pts[i].rpm) {
+      const a = pts[i - 1], b = pts[i];
+      return a.hp + ((rpm - a.rpm) / (b.rpm - a.rpm || 1)) * (b.hp - a.hp);
+    }
+  }
+  return pts[pts.length - 1].hp;
+}
+function parseCurvePairs(text) {
+  const pts = [];
+  for (const line of text.split(/\r?\n/)) {
+    const nums = line.split(/[,;\t]+/).map((s) => parseFloat(s.replace(/[^0-9.eE+-]/g, ""))).filter(Number.isFinite);
+    if (nums.length >= 2 && nums[0] >= 0) pts.push({ x: nums[0], y: nums[1] });
+  }
+  return pts;
+}
+const CURVE_UNITS = {
+  hp: { label: "HP", conv: (y) => y },
+  kw: { label: "kW", conv: (y) => y * 1.341 },
+  ftlb: { label: "Torque (ft-lb)", conv: (y, rpm) => (y * rpm) / 5252 },
+  nm: { label: "Torque (Nm)", conv: (y, rpm) => (y * rpm) / 7121 },
+};
+
+/* ---------------- storage ---------------- */
+const KEY = "fsw:data:v1";
+const API_BASE = (import.meta.env.VITE_API_BASE || localStorage.getItem("fsw:apiBase") || "").replace(/\/+$/, "");
+async function loadAll() {
+  try {
+    const r = localStorage.getItem(KEY);
+    return r ? JSON.parse(r) : null;
+  } catch { return null; }
+}
+async function saveAll(data) {
+  try { localStorage.setItem(KEY, JSON.stringify(data)); } catch (e) { console.error("save failed", e); }
+}
+async function apiPost(path, body) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `API request failed (${response.status})`);
+  return data;
+}
+
+/* ---------------- AI lookup ---------------- */
+async function lookupTool(brand, pn) {
+  return apiPost("/api/tool-lookup", { brand, pn });
+}
+
+/* ---------------- AI torque-curve digitization (PDF or image) ---------------- */
+async function digitizeCurve(file) {
+  const b64 = await new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result.split(",")[1]);
+    r.onerror = () => rej(new Error("read failed"));
+    r.readAsDataURL(file);
+  });
+  return apiPost("/api/curve-digitize", { filename: file.name, mimeType: file.type || "application/octet-stream", fileData: b64 });
+}
+
+/* ---------------- Fusion .tools import (a .tools file is a zip with JSON inside) ---------------- */
+async function unzipEntries(buf) {
+  const dv = new DataView(buf);
+  let i = buf.byteLength - 22;
+  while (i >= 0 && dv.getUint32(i, true) !== 0x06054b50) i--;
+  if (i < 0) throw new Error("not a zip archive");
+  const count = dv.getUint16(i + 10, true);
+  let off = dv.getUint32(i + 16, true);
+  const entries = [];
+  for (let n = 0; n < count; n++) {
+    if (dv.getUint32(off, true) !== 0x02014b50) break;
+    const method = dv.getUint16(off + 10, true);
+    const csize = dv.getUint32(off + 20, true);
+    const nameLen = dv.getUint16(off + 28, true);
+    const extraLen = dv.getUint16(off + 30, true);
+    const cmtLen = dv.getUint16(off + 32, true);
+    const lho = dv.getUint32(off + 42, true);
+    const name = new TextDecoder().decode(new Uint8Array(buf, off + 46, nameLen));
+    entries.push({ name, method, csize, lho });
+    off += 46 + nameLen + extraLen + cmtLen;
+  }
+  const out = [];
+  for (const e of entries) {
+    const nl = dv.getUint16(e.lho + 26, true);
+    const el = dv.getUint16(e.lho + 28, true);
+    const comp = new Uint8Array(buf, e.lho + 30 + nl + el, e.csize);
+    let bytes;
+    if (e.method === 0) bytes = comp;
+    else if (e.method === 8) {
+      const stream = new Blob([comp]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+      bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+    } else continue;
+    out.push({ name: e.name, text: new TextDecoder().decode(bytes) });
+  }
+  return out;
+}
+
+const FUSION_TYPES = {
+  "flat end mill": "square_endmill", "ball end mill": "ball_endmill", "chamfer mill": "chamfer_mill",
+  "drill": "drill", "jobber drill": "drill", "stub drill": "drill", "taper drill": "drill",
+  "tap": "tap", "tap right hand": "tap", "tap left hand": "tap", "thread tap": "tap",
+};
+function mapFusionTool(ft) {
+  const type = FUSION_TYPES[(ft.type || "").toLowerCase()];
+  if (!type) return null;
+  const g = ft.geometry || {};
+  const inches = (ft.unit || "millimeters").startsWith("inch");
+  const cv = (v) => (Number.isFinite(v) ? (inches ? v : v / IN_MM) : null);
+  const dia = cv(g.DC);
+  if (!dia) return null;
+  const extra = type === "chamfer_mill"
+    ? { angle: Number.isFinite(g.TA) ? 2 * g.TA : 90, tipDia: cv(g["tip-diameter"]) ?? 0 }
+    : type === "tap" ? { pitch: cv(g.TP) ?? null } : {};
+  return {
+    id: "f" + Date.now() + Math.random().toString(36).slice(2, 6),
+    brand: ft.vendor || "", pn: ft["product-id"] || "", series: "", name: ft.description || "",
+    type, dia, flutes: g.NOF || 2, coating: "", loc: cv(g.LCF), metricTool: !inches,
+    cutting: {}, source: "fusion-import", notes: "", ...extra,
+  };
+}
+
+/* ============================================================
+   MATH CORE
+   ============================================================ */
+function computeCut({ tool, machine, group, op, mode, sfm, ae, ap, targetChip, fz, ipr, stickout }) {
+  const g = GROUPS[group];
+  if (!tool || !g) return null;
+  const D = tool.dia;
+  const out = { warnings: [], info: [] };
+
+  // effective diameter (ball nose in shallow 3D finishing; chamfer mills always)
+  let Deff = D;
+  if (tool.type === "ball_endmill" && op === "finish3d" && ap > 0 && ap < D / 2) {
+    Deff = 2 * Math.sqrt(ap * (D - ap));
+    out.info.push(`Ball effective Ø at ${fmt(ap, 4)}" DOC: ${fmt(Deff, 4)}" — RPM computed on effective Ø`);
+  }
+  if (tool.type === "chamfer_mill") {
+    const half = (((tool.angle || 90) / 2) * Math.PI) / 180;
+    const tip = tool.tipDia || 0;
+    const engaged = tip + 2 * ap * Math.tan(half);
+    Deff = Math.min(Math.max(engaged, tip || 0.02), D);
+    if (engaged > D * 1.001) out.warnings.push({ level: "amber", msg: `This depth engages Ø${fmt(engaged, 3)}" — past the tool's max Ø${fmt(D, 3)}". Reduce chamfer depth.` });
+    out.info.push(`Effective Ø at ${fmt(ap, 4)}" depth: ${fmt(Deff, 4)}" (${fmt(tool.angle || 90, 0)}° included, ${fmt(tip, 3)}" tip) — RPM computed on effective Ø. Chamfer leg ≈ ${fmt(ap * Math.tan(half), 4)}".`);
+  }
+
+  const rpmRaw = (sfm * 12) / (Math.PI * Deff);
+  let rpm = rpmRaw;
+  out.rpmRaw = rpmRaw;
+  out.clamped = false;
+  if (machine?.maxRpm && rpmRaw > machine.maxRpm) {
+    rpm = machine.maxRpm;
+    out.clamped = true;
+    out.warnings.push({ level: "amber", msg: `Wants ${fmt(rpmRaw, 0)} RPM — clamped to ${machine.name} max ${fmt(machine.maxRpm, 0)}. Effective ${fmt((rpm * Math.PI * Deff) / 12, 0)} SFM.` });
+  }
+  out.rpm = rpm;
+  out.sfmActual = (rpm * Math.PI * Deff) / 12;
+
+  if (tool.type === "tap") {
+    const pitch = tool.pitch;
+    out.mrr = 0; out.hp = 0; out.torque = 0;
+    if (!Number.isFinite(pitch) || pitch <= 0) {
+      out.feed = 0; out.fzProg = 0;
+      out.warnings.push({ level: "red", msg: "No thread pitch on this tap — Edit it in the library to get a feed." });
+    } else {
+      out.feed = rpm * pitch;
+      out.fzProg = pitch;
+      out.info.push(`Rigid tapping: feed is locked to pitch (${fmt(pitch, 4)}"/rev = ${fmt(pitch * IN_MM, 2)} mm/rev). Program G84 and let the control sync — RPM is your only free variable.`);
+    }
+    powerCheck(out, machine, rpm);
+    return out;
+  }
+
+  if (tool.type === "drill") {
+    const iprUse = ipr;
+    out.feed = rpm * iprUse;
+    out.fzProg = iprUse;
+    out.mrr = (Math.PI / 4) * D * D * out.feed;
+    out.chipActual = iprUse / 2; // per lip, 2-flute assumption
+    out.hp = out.mrr / g.uhp;
+    out.torque = out.hp > 0 && rpm > 0 ? (out.hp * 5252) / rpm : 0;
+    powerCheck(out, machine, rpm);
+    return out;
+  }
+
+  if (tool.type === "chamfer_mill") {
+    const zc = tool.flutes || 2;
+    const half = (((tool.angle || 90) / 2) * Math.PI) / 180;
+    out.fzProg = fz;
+    out.chipActual = fz;
+    out.feed = rpm * zc * fz;
+    const leg = ap * Math.tan(half);
+    out.mrr = 0.5 * ap * leg * out.feed; // triangular chamfer cross-section
+    out.hp = out.mrr / g.uhp;
+    out.torque = out.hp > 0 && rpm > 0 ? (out.hp * 5252) / rpm : 0;
+    powerCheck(out, machine, rpm);
+    return out;
+  }
+
+  // milling
+  const z = tool.flutes || 2;
+  const r = Math.min(Math.max(ae / D, 0.001), 1);
+  const ctf = r < 0.5 ? 2 * Math.sqrt(r * (1 - r)) : 1; // hex = fz * ctf
+  out.ctf = ctf;
+
+  let fzProg;
+  if (op === "adaptive") {
+    fzProg = targetChip / ctf;
+    out.info.push(`Chip thinning at ${fmt(r * 100, 1)}% engagement: programmed ${fmt(fzProg, 5)}" IPT to hold ${fmt(targetChip, 5)}" chip (×${fmt(1 / ctf, 2)})`);
+    const fzCap = scaleIpt(0.014, D); // sanity ceiling
+    if (fzProg > fzCap) {
+      out.warnings.push({ level: "amber", msg: `Programmed IPT ${fmt(fzProg, 5)}" is very high — verify tool strength / edge prep before running.` });
+    }
+  } else {
+    fzProg = fz;
+    out.chipActual = fz * ctf;
+    if (r < 0.5) out.info.push(`Actual max chip thickness: ${fmt(out.chipActual, 5)}" (thinned from ${fmt(fz, 5)}" IPT at ${fmt(r * 100, 1)}% stepover)`);
+  }
+  out.fzProg = fzProg;
+  out.feed = rpm * z * fzProg;
+  out.mrr = ae * ap * out.feed;
+  out.hp = out.mrr / g.uhp;
+  out.torque = out.hp > 0 && rpm > 0 ? (out.hp * 5252) / rpm : 0;
+
+  // ball scallop for 3D finishing
+  if (tool.type === "ball_endmill" && op === "finish3d" && ae > 0 && ae < D) {
+    const R = D / 2;
+    const scallop = R - Math.sqrt(Math.max(R * R - (ae / 2) * (ae / 2), 0));
+    out.info.push(`Scallop height at ${fmt(ae, 4)}" stepover: ${fmt(scallop * 1000, 2)} thou (${fmt(scallop * IN_MM * 1000, 1)} µm)`);
+  }
+
+  // engagement sanity
+  if (op === "slot" && ap > D * 1.05) out.warnings.push({ level: "amber", msg: `Slotting deeper than 1×Ø (${fmt(D, 3)}") in one pass — consider multiple stepdowns.` });
+  if (op === "side" && ae > D * 0.55) out.warnings.push({ level: "amber", msg: `Radial engagement > 0.5×Ø in conventional side milling — heavy cut, watch deflection.` });
+  if (mode === "finish" && ae > 0.025) out.info.push(`Finishing tip: typical stock-to-leave for this material is ${fmt(g.stock[0], 3)}"–${fmt(g.stock[1], 3)}" radial. Spring passes recommended on toleranced walls.`);
+
+  // deflection / chatter risk — heuristic cantilever model, not a stability-lobe guarantee
+  if (out.hp > 0 && out.sfmActual > 0) {
+    const L = Number.isFinite(stickout) && stickout > 0 ? stickout : D * 3;
+    const assumedL = !(Number.isFinite(stickout) && stickout > 0);
+    const ld = L / D;
+    const Ft = (33000 * out.hp) / out.sfmActual; // tangential force, lbf
+    const I = (Math.PI * Math.pow(D * 0.8, 4)) / 64; // fluted core ≈ 0.8×Ø
+    const delta = (Ft * Math.pow(L, 3)) / (3 * 87e6 * I); // carbide E ≈ 87 Mpsi
+    const level = delta > 0.0012 || ld > 6 ? "high" : delta > 0.0004 || ld > 4.5 ? "elevated" : "low";
+    out.chatter = { delta, ld, level, L, assumedL, Ft };
+  }
+
+  powerCheck(out, machine, rpm);
+  return out;
+}
+
+function powerCheck(out, machine, rpm) {
+  const avail = availableHp(machine, rpm);
+  if (avail == null) return;
+  out.hpAvail = avail;
+  out.hpSrc = machine.curve?.length > 1 ? "curve" : "flat";
+  out.hpPct = avail > 0 ? out.hp / avail : Infinity;
+  if (out.hp <= 0) return;
+  if (out.hpPct > 1) out.warnings.push({ level: "red", msg: `Needs ${fmt(out.hp, 1)} HP at the tool — only ${fmt(avail, 1)} HP available at ${fmt(rpm, 0)} RPM${out.hpSrc === "flat" ? ` (${machine.name} flat rating)` : ` on ${machine.name}'s curve`}. Reduce DOC/WOC or feed.` });
+  else if (out.hpPct > 0.8) out.warnings.push({ level: "amber", msg: `${fmt(out.hpPct * 100, 0)}% of available spindle power at this RPM — near the limit.` });
+}
+
+/* seed sfm / fz for a tool+group+mode from library data or generic tables */
+function seedParams(tool, group, mode, op) {
+  const g = GROUPS[group];
+  const lib = tool?.cutting?.[group];
+  if (tool?.type === "tap") {
+    const s = lib && Number.isFinite(lib.sfmLo) ? (lib.sfmLo + lib.sfmHi) / 2 : g.sfm[0] * 0.3;
+    return { sfm: Math.round(s), ipt: null, source: lib ? (lib.src || "manufacturer") : "generic" };
+  }
+  let sfm, ipt, source;
+  if (lib && Number.isFinite(lib.sfmLo)) {
+    sfm = mode === "rough" ? (lib.sfmLo + lib.sfmHi) / 2 : Math.min(lib.sfmHi, ((lib.sfmLo + lib.sfmHi) / 2) * FINISH_SFM_FACTOR);
+    ipt = mode === "rough" ? (lib.iptLo + lib.iptHi) / 2 : Math.max(lib.iptLo, ((lib.iptLo + lib.iptHi) / 2) * FINISH_FZ_FACTOR);
+    source = lib.src || "manufacturer";
+  } else {
+    sfm = mode === "rough" ? (g.sfm[0] + g.sfm[1]) / 2 : Math.min(g.sfm[1], ((g.sfm[0] + g.sfm[1]) / 2) * FINISH_SFM_FACTOR);
+    const base = tool?.type === "drill" ? null : scaleIpt(g.ipt, tool?.dia || 0.5);
+    ipt = base != null ? (mode === "rough" ? base : base * FINISH_FZ_FACTOR) : null;
+    if (tool?.type === "drill") {
+      sfm = sfm * DRILL.sfmFactor;
+      ipt = DRILL.iprAtHalf[group] * Math.pow((tool.dia || 0.5) / 0.5, 0.8);
+    }
+    source = "generic";
+  }
+  if (op === "slot" && ipt != null && tool?.type !== "drill") ipt *= 0.8; // catalog convention: slotting IPT = side milling −20%
+  if (tool?.type === "chamfer_mill" && ipt != null) ipt *= 0.75; // light chip on small effective Ø / weak tip
+  return { sfm: Math.round(sfm), ipt: ipt != null ? +ipt.toFixed(5) : null, source };
+}
+
+/* ============================================================
+   UI PRIMITIVES
+   ============================================================ */
+function Field({ label, unit, children }) {
+  return (
+    <label className="field">
+      <span className="field-label">{label}{unit ? <em>{unit}</em> : null}</span>
+      {children}
+    </label>
+  );
+}
+
+function NumInput({ value, onChange, step, min, disabled, metric, isLength, isFeedPerTooth, digits = 4 }) {
+  // metric display conversion: lengths in mm, ipt in mm too
+  const toDisp = (v) => (metric && (isLength || isFeedPerTooth) ? v * IN_MM : v);
+  const fromDisp = (v) => (metric && (isLength || isFeedPerTooth) ? v / IN_MM : v);
+  const [text, setText] = useState("");
+  const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    if (!editing) setText(Number.isFinite(value) ? String(+toDisp(value).toFixed(digits)) : "");
+  }, [value, metric, editing]); // eslint-disable-line
+  return (
+    <input
+      className="num" type="number" step={step || "any"} min={min} disabled={disabled} value={text}
+      onFocus={() => setEditing(true)}
+      onBlur={() => { setEditing(false); const n = parseFloat(text); if (Number.isFinite(n)) onChange(fromDisp(n)); }}
+      onChange={(e) => { setText(e.target.value); const n = parseFloat(e.target.value); if (Number.isFinite(n)) onChange(fromDisp(n)); }}
+    />
+  );
+}
+
+function Chip({ active, onClick, children }) {
+  return <button className={"chip" + (active ? " chip-on" : "")} onClick={onClick}>{children}</button>;
+}
+
+/* ============================================================
+   APP
+   ============================================================ */
+export default function App() {
+  const [tab, setTab] = useState("calc");
+  const [machines, setMachines] = useState([]);
+  const [tools, setTools] = useState([]);
+  const [metric, setMetric] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const saveTimer = useRef(null);
+
+  useEffect(() => {
+    (async () => {
+      const d = await loadAll();
+      if (d) { setMachines(d.machines || []); setTools(d.tools || []); setMetric(!!d.metric); }
+      setLoaded(true);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => saveAll({ machines, tools, metric }), 400);
+  }, [machines, tools, metric, loaded]);
+
+  const importRef = useRef(null);
+  const exportData = () => {
+    const blob = new Blob([JSON.stringify({ app: "feeds-speeds-workbench", v: 1, machines, tools }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "shop-data.json"; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  };
+  const importData = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    try {
+      const d = JSON.parse(await file.text());
+      const inM = Array.isArray(d.machines) ? d.machines : [];
+      const inT = Array.isArray(d.tools) ? d.tools : [];
+      let addM = 0, addT = 0;
+      setMachines((prev) => {
+        const have = new Set(prev.map((m) => m.name.toLowerCase()));
+        const fresh = inM.filter((m) => m?.name && !have.has(m.name.toLowerCase()));
+        addM = fresh.length;
+        return [...prev, ...fresh];
+      });
+      setTools((prev) => {
+        const have = new Set(prev.map((t) => (t.brand + "|" + t.pn + "|" + t.dia).toLowerCase()));
+        const fresh = inT.filter((t) => t?.dia && !have.has((t.brand + "|" + t.pn + "|" + t.dia).toLowerCase()));
+        addT = fresh.length;
+        return [...prev, ...fresh];
+      });
+      setTimeout(() => alert(`Imported ${addM} machine(s) and ${addT} tool(s). Duplicates were skipped.`), 50);
+    } catch { alert("Couldn't read that file — expected a shop-data.json exported from this app."); }
+  };
+
+  return (
+    <div className="app">
+      <style>{CSS}</style>
+      <header className="topbar">
+        <div className="brand">
+          <span className="brand-mark" />
+          <div>
+            <h1>Feeds &amp; Speeds Workbench</h1>
+            <p>Manufacturer data first · physics fallback always</p>
+          </div>
+        </div>
+        <div className="topbar-right">
+          <button className="btn sm" onClick={exportData} title="Download your machines + tool library as a JSON file to back up or hand to a coworker">Export</button>
+          <button className="btn sm" onClick={() => importRef.current?.click()} title="Merge a shop-data.json into your library (duplicates skipped)">Import</button>
+          <input ref={importRef} type="file" accept=".json" style={{ display: "none" }} onChange={importData} />
+          <div className="unit-toggle" role="group" aria-label="Units">
+            <button className={!metric ? "on" : ""} onClick={() => setMetric(false)}>inch</button>
+            <button className={metric ? "on" : ""} onClick={() => setMetric(true)}>mm</button>
+          </div>
+        </div>
+      </header>
+
+      <nav className="tabs">
+        {[["calc", "Calculator"], ["tools", `Tool library (${tools.length})`], ["machines", `Machines (${machines.length})`]].map(([k, l]) => (
+          <button key={k} className={tab === k ? "tab on" : "tab"} onClick={() => setTab(k)}>{l}</button>
+        ))}
+      </nav>
+
+      {!loaded ? <div className="loading">Loading your shop data…</div> : (
+        <main>
+          {tab === "machines" && <Machines machines={machines} setMachines={setMachines} />}
+          {tab === "tools" && <Tools tools={tools} setTools={setTools} metric={metric} />}
+          {tab === "calc" && <Calculator machines={machines} tools={tools} metric={metric} goTo={setTab} />}
+        </main>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   MACHINES TAB
+   ============================================================ */
+function Machines({ machines, setMachines }) {
+  const blank = { name: "", maxRpm: "", hp: "", notes: "" };
+  const [draft, setDraft] = useState(blank);
+  const [editId, setEditId] = useState(null);
+  const [curveFor, setCurveFor] = useState(null); // machine id receiving a curve
+  const [curveBusy, setCurveBusy] = useState(false);
+  const [curveErr, setCurveErr] = useState("");
+  const [curveDraft, setCurveDraft] = useState(null); // {machineId, srcName, notes, raw?:pairs, unit?, points}
+  const curveFileRef = useRef(null);
+
+  const commit = () => {
+    if (!draft.name.trim() || !parseFloat(draft.maxRpm)) return;
+    const m = { id: editId || String(Date.now()), name: draft.name.trim(), maxRpm: parseFloat(draft.maxRpm), hp: parseFloat(draft.hp) || null, notes: draft.notes.trim() };
+    setMachines((prev) => editId ? prev.map((x) => (x.id === editId ? { ...x, ...m } : x)) : [...prev, m]);
+    setDraft(blank); setEditId(null);
+  };
+
+  const pickCurve = (id) => { setCurveFor(id); setCurveErr(""); curveFileRef.current?.click(); };
+
+  const onCurveFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    const machineId = curveFor;
+    if (!file || !machineId) return;
+    setCurveErr(""); setCurveDraft(null);
+    const isCsv = /\.(csv|txt|tsv)$/i.test(file.name) || (file.type || "").includes("csv") || (file.type || "").includes("text");
+    if (isCsv) {
+      const raw = parseCurvePairs(await file.text());
+      if (raw.length < 2) { setCurveErr("Couldn't find RPM + value pairs in that file. Expected rows like: 2000, 22.5"); return; }
+      setCurveDraft({ machineId, srcName: file.name, raw, unit: "hp", notes: `${raw.length} rows parsed — first column read as RPM.` });
+    } else {
+      setCurveBusy(true);
+      try {
+        const res = await digitizeCurve(file);
+        if (!res.found || !(res.points?.length >= 2)) {
+          setCurveErr("Couldn't find a power/torque curve in that file. " + (res.notes || ""));
+        } else {
+          const points = res.points.filter((p) => Number.isFinite(p.rpm) && Number.isFinite(p.hp)).sort((a, b) => a.rpm - b.rpm);
+          setCurveDraft({ machineId, srcName: file.name, points, notes: res.notes || "" });
+        }
+      } catch (err) { setCurveErr("Digitization failed (" + (err.message || "error") + "). A cropped screenshot of just the chart usually works best."); }
+      setCurveBusy(false);
+    }
+  };
+
+  const draftPoints = curveDraft
+    ? (curveDraft.points || curveDraft.raw.map((p) => ({ rpm: p.x, hp: CURVE_UNITS[curveDraft.unit].conv(p.y, p.x) })).sort((a, b) => a.rpm - b.rpm))
+    : null;
+
+  const saveCurve = () => {
+    if (!draftPoints || draftPoints.length < 2) return;
+    setMachines((prev) => prev.map((m) => (m.id === curveDraft.machineId ? { ...m, curve: draftPoints, curveSrc: curveDraft.srcName } : m)));
+    setCurveDraft(null); setCurveFor(null);
+  };
+  const removeCurve = (id) => setMachines((prev) => prev.map((m) => (m.id === id ? { ...m, curve: null, curveSrc: null } : m)));
+
+  const curveMachine = curveDraft ? machines.find((m) => m.id === curveDraft.machineId) : null;
+  const peak = draftPoints ? draftPoints.reduce((a, p) => (p.hp > a.hp ? p : a), draftPoints[0]) : null;
+
+  return (
+    <section className="panel">
+      <h2>Machines</h2>
+      <p className="hint">Max spindle RPM clamps everything. Import a power/torque curve (manual PDF, a screenshot of the chart, or a CSV of RPM,value rows) and the calculator will check power at your <em>actual</em> RPM instead of the nameplate number.</p>
+      <div className="grid-form">
+        <Field label="Name"><input className="num txt" placeholder="Haas VF-2" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></Field>
+        <Field label="Max spindle" unit="RPM"><input className="num" type="number" placeholder="10000" value={draft.maxRpm} onChange={(e) => setDraft({ ...draft, maxRpm: e.target.value })} /></Field>
+        <Field label="Rated power (fallback)" unit="HP"><input className="num" type="number" placeholder="30" value={draft.hp} onChange={(e) => setDraft({ ...draft, hp: e.target.value })} /></Field>
+        <Field label="Notes"><input className="num txt" placeholder="CAT40, TSC…" value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} /></Field>
+      </div>
+      <div className="row-btns">
+        <button className="btn primary" onClick={commit}>{editId ? "Save changes" : "Add machine"}</button>
+        {editId && <button className="btn" onClick={() => { setDraft(blank); setEditId(null); }}>Cancel</button>}
+      </div>
+      <input ref={curveFileRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.csv,.txt,.tsv" style={{ display: "none" }} onChange={onCurveFile} />
+      {curveBusy && <div className="notice info">Reading the curve with AI vision — pulling 12–24 points off the continuous-duty line. Usually 15–30 seconds…</div>}
+      {curveErr && <div className="notice amber">{curveErr}</div>}
+
+      {curveDraft && draftPoints && (
+        <div className="card">
+          <h3>Power curve for {curveMachine?.name} — review before saving</h3>
+          <p className="hint">{curveDraft.srcName} · {draftPoints.length} points · peak {fmt(peak.hp, 1)} HP @ {fmt(peak.rpm, 0)} RPM{curveDraft.notes ? " · " + curveDraft.notes : ""}</p>
+          {curveDraft.raw && (
+            <div className="chip-row" style={{ marginBottom: 8 }}>
+              <span className="chip-label">2nd column is</span>
+              {Object.entries(CURVE_UNITS).map(([k, u]) => (
+                <Chip key={k} active={curveDraft.unit === k} onClick={() => setCurveDraft((p) => ({ ...p, unit: k }))}>{u.label}</Chip>
+              ))}
+            </div>
+          )}
+          <Spark pts={draftPoints} w={420} h={110} />
+          <div className="row-btns">
+            <button className="btn primary" onClick={saveCurve}>Save curve</button>
+            <button className="btn" onClick={() => { setCurveDraft(null); setCurveFor(null); }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {machines.length === 0 ? <div className="empty">No machines yet. Add your VF-2 and friends above — they'll be here every session.</div> : (
+        <table className="tbl">
+          <thead><tr><th>Machine</th><th>Max RPM</th><th>Power</th><th>Notes</th><th /></tr></thead>
+          <tbody>
+            {machines.map((m) => (
+              <tr key={m.id}>
+                <td className="mono strong">{m.name}</td>
+                <td className="mono">{fmt(m.maxRpm, 0)}</td>
+                <td>{m.curve?.length > 1
+                  ? <div className="curve-cell"><Spark pts={m.curve} w={110} h={30} /><span className="dim">peak {fmt(Math.max(...m.curve.map((p) => p.hp)), 1)} HP</span></div>
+                  : <span className="dim">{Number.isFinite(m.hp) && m.hp ? m.hp + " HP flat" : "—"}</span>}</td>
+                <td>{m.notes}</td>
+                <td className="row-actions">
+                  <button className="btn sm" disabled={curveBusy} onClick={() => pickCurve(m.id)} title="Import a power/torque curve: PDF, chart screenshot, or CSV">{m.curve ? "Re-curve" : "Curve"}</button>
+                  {m.curve && <button className="btn sm" onClick={() => removeCurve(m.id)} title="Remove curve, fall back to flat HP rating">No curve</button>}
+                  <button className="btn sm" onClick={() => { setDraft({ name: m.name, maxRpm: m.maxRpm, hp: m.hp ?? "", notes: m.notes || "" }); setEditId(m.id); }}>Edit</button>
+                  <button className="btn sm danger" onClick={() => setMachines((p) => p.filter((x) => x.id !== m.id))}>Delete</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+}
+
+function Spark({ pts, w = 120, h = 34 }) {
+  if (!pts || pts.length < 2) return null;
+  const s = [...pts].sort((a, b) => a.rpm - b.rpm);
+  const xMin = s[0].rpm, xMax = s[s.length - 1].rpm || 1;
+  const yMax = Math.max(...s.map((p) => p.hp)) || 1;
+  const X = (r) => 2 + ((r - xMin) / (xMax - xMin || 1)) * (w - 4);
+  const Y = (v) => h - 2 - (v / yMax) * (h - 6);
+  const d = s.map((p, i) => (i ? "L" : "M") + X(p.rpm).toFixed(1) + " " + Y(p.hp).toFixed(1)).join(" ");
+  return (
+    <svg className="spark" width={w} height={h} viewBox={`0 0 ${w} ${h}`} role="img" aria-label="spindle power curve">
+      <path d={d + ` L${X(s[s.length - 1].rpm).toFixed(1)} ${h - 1} L${X(s[0].rpm).toFixed(1)} ${h - 1} Z`} className="spark-fill" />
+      <path d={d} className="spark-line" fill="none" />
+    </svg>
+  );
+}
+
+/* ============================================================
+   TOOLS TAB — library + AI lookup
+   ============================================================ */
+function emptyTool() {
+  return { id: String(Date.now()) + Math.random().toString(36).slice(2, 5), brand: "", pn: "", series: "", name: "", type: "square_endmill", dia: 0.5, flutes: 3, coating: "", loc: null, angle: null, tipDia: null, cutting: {}, source: "user", notes: "" };
+}
+
+function Tools({ tools, setTools, metric }) {
+  const [lookupBrand, setLookupBrand] = useState("");
+  const [lookupPn, setLookupPn] = useState("");
+  const [queue, setQueue] = useState([]); // jobs: {kind:'new',brand,pn} | {kind:'enrich',id}
+  const [active, setActive] = useState(null); // job currently searching
+  const [lookupErr, setLookupErr] = useState("");
+  const [candidates, setCandidates] = useState([]); // finished lookups awaiting review: [{tool, meta}]
+  const [manual, setManual] = useState(null); // manual-entry tool draft
+  const [importList, setImportList] = useState(null); // [{tool, checked}]
+  const [importSkipped, setImportSkipped] = useState([]);
+  const [sel, setSel] = useState(() => new Set()); // multi-selected tool ids
+  const [tFType, setTFType] = useState("all");
+  const [tFBrand, setTFBrand] = useState("all");
+  const [tFDia, setTFDia] = useState("all");
+  const [tFData, setTFData] = useState("all");
+  const [sort, setSort] = useState({ k: "dia", d: 1 });
+  const [batch, setBatch] = useState({ total: 0, done: 0 });
+  const fileRef = useRef(null);
+  const toolsRef = useRef(tools);
+  useEffect(() => { toolsRef.current = tools; }, [tools]);
+
+  // sequential queue processor — one web lookup at a time, results stack up below for review
+  useEffect(() => {
+    if (active || queue.length === 0) return;
+    const job = queue[0];
+    setQueue((q) => q.slice(1));
+    setActive(job);
+    (async () => {
+      try {
+        const existing = job.kind === "enrich" ? toolsRef.current.find((t) => t.id === job.id) : null;
+        const brand = (job.kind === "enrich" ? existing?.brand : job.brand) || "unknown brand";
+        const pnq = job.kind === "enrich" ? (existing?.pn || existing?.name) : job.pn;
+        const res = await lookupTool(brand, pnq);
+        if (!res.found || !res.tool) {
+          if (job.kind === "new") {
+            setLookupErr(`Couldn't identify "${brand} ${pnq}" on the web. Enter it manually — generic tables will be used until you add numbers.`);
+            setManual({ ...emptyTool(), brand: job.brand, pn: job.pn });
+          } else {
+            setLookupErr(`No web data found for "${brand} ${pnq}" — it keeps its current data. You can enter catalog numbers via Edit.`);
+          }
+        } else {
+          const t = res.tool;
+          const cutting = { ...(existing?.cutting || {}) };
+          (res.cutting || []).forEach((c) => { if (GROUPS[c.group]) cutting[c.group] = { sfmLo: c.sfm_lo, sfmHi: c.sfm_hi, iptLo: c.ipt_lo, iptHi: c.ipt_hi, src: "manufacturer" }; });
+          const base = existing || { ...emptyTool(), source: "lookup" };
+          const merged = {
+            ...base,
+            brand: base.brand || t.brand || "",
+            pn: base.pn || t.pn || (job.kind === "new" ? job.pn : ""),
+            series: t.series || base.series || "",
+            name: base.name || t.name || "",
+            type: existing?.type || (TOOL_TYPES[t.type] ? t.type : "square_endmill"),
+            dia: existing?.dia || t.dia_in || 0.5,
+            flutes: existing?.flutes || t.flutes || 2,
+            coating: base.coating || t.coating || "",
+            loc: base.loc ?? t.loc_in ?? null,
+            angle: base.angle ?? t.included_angle_deg ?? null,
+            tipDia: base.tipDia ?? t.tip_dia_in ?? null,
+            pitch: base.pitch ?? t.pitch_in ?? null,
+            metricTool: base.metricTool ?? !!t.metric_callout,
+            cutting, source: Object.keys(cutting).length ? "manufacturer" : (existing ? existing.source : "lookup-no-data"),
+            notes: res.notes || base.notes || "",
+          };
+          setCandidates((p) => [...p.filter((c) => c.tool.id !== merged.id), { tool: merged, meta: { confidence: res.confidence, sources: res.sources || [], noData: !Object.keys(cutting).length } }]);
+        }
+      } catch (e) {
+        setLookupErr("Lookup failed (" + (e.message || "error") + "). Try again or add data via Edit.");
+      }
+      setBatch((b) => (b.total ? { ...b, done: b.done + 1 } : b));
+      setActive(null);
+    })();
+  }, [queue, active]); // eslint-disable-line
+
+  // clear the progress bar a beat after the batch completes
+  useEffect(() => {
+    if (batch.total > 0 && batch.done >= batch.total && queue.length === 0 && !active) {
+      const t = setTimeout(() => setBatch({ total: 0, done: 0 }), 2500);
+      return () => clearTimeout(t);
+    }
+  }, [batch, queue, active]);
+
+  const queuedIds = new Set(queue.filter((j) => j.kind === "enrich").map((j) => j.id));
+  const activeId = active?.kind === "enrich" ? active.id : null;
+  const pendingCount = queue.length + (active ? 1 : 0);
+  const jobLabel = (j) => {
+    if (!j) return "";
+    if (j.kind === "new") return `${j.brand || "?"} ${j.pn}`;
+    const t = toolsRef.current.find((x) => x.id === j.id);
+    return t ? toolLabel(t, metric) : "tool";
+  };
+
+  const enqueueEnrich = (t) => {
+    if (activeId === t.id || queuedIds.has(t.id)) return;
+    setLookupErr("");
+    setBatch((b) => ({ total: b.total + 1, done: b.done }));
+    setQueue((q) => [...q, { kind: "enrich", id: t.id }]);
+  };
+
+  /* filtering + sorting for the library table */
+  const brands = useMemo(() => [...new Set(tools.map((t) => t.brand).filter(Boolean))].sort(), [tools]);
+  const diaOpts = useMemo(() => {
+    const m = new Map();
+    [...tools].sort((a, b) => a.dia - b.dia).forEach((t) => { if (Number.isFinite(t.dia) && !m.has(String(t.dia))) m.set(String(t.dia), toolDiaLabel(t, metric)); });
+    return [...m.entries()];
+  }, [tools, metric]);
+  const visible = useMemo(() => {
+    const arr = tools.filter((t) =>
+      (tFType === "all" || t.type === tFType) &&
+      (tFBrand === "all" || t.brand === tFBrand) &&
+      (tFDia === "all" || String(t.dia) === tFDia) &&
+      (tFData === "all" || (tFData === "mfg" ? hasMfgData(t) : !hasMfgData(t)))
+    );
+    const key = {
+      dia: (t) => t.dia,
+      name: (t) => toolLabel(t, metric).toLowerCase(),
+      type: (t) => t.type,
+      flutes: (t) => t.flutes || 0,
+      data: (t) => (hasMfgData(t) ? Object.keys(t.cutting).join("") : "zz"),
+    }[sort.k] || ((t) => t.dia);
+    return arr.sort((a, b) => { const ka = key(a), kb = key(b); return (ka < kb ? -1 : ka > kb ? 1 : a.dia - b.dia) * sort.d; });
+  }, [tools, tFType, tFBrand, tFDia, tFData, sort, metric]);
+  const clickSort = (k) => setSort((s) => (s.k === k ? { k, d: -s.d } : { k, d: 1 }));
+  const arrow = (k) => (sort.k === k ? (sort.d === 1 ? " ▲" : " ▼") : "");
+
+  /* multi-select */
+  const allVisSelected = visible.length > 0 && visible.every((t) => sel.has(t.id));
+  const toggleAll = () => setSel((p) => {
+    const n = new Set(p);
+    if (allVisSelected) visible.forEach((t) => n.delete(t.id));
+    else visible.forEach((t) => n.add(t.id));
+    return n;
+  });
+  const toggleSel = (id) => setSel((p) => { const n = new Set(p); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const selTools = tools.filter((t) => sel.has(t.id));
+  const bulkDelete = () => {
+    if (!selTools.length) return;
+    if (!window.confirm(`Delete ${selTools.length} tool${selTools.length > 1 ? "s" : ""} from the library? This can't be undone.`)) return;
+    setTools((prev) => prev.filter((t) => !sel.has(t.id)));
+    setSel(new Set());
+  };
+  const bulkLookup = () => {
+    const targets = selTools.filter((t) => activeId !== t.id && !queuedIds.has(t.id));
+    if (!targets.length) return;
+    setLookupErr("");
+    setBatch((b) => ({ total: b.total + targets.length, done: b.done }));
+    setQueue((q) => [...q, ...targets.map((t) => ({ kind: "enrich", id: t.id }))]);
+  };
+
+  const onFusionFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setLookupErr(""); setImportList(null); setImportSkipped([]);
+    try {
+      const buf = await file.arrayBuffer();
+      let jsons;
+      if (file.name.toLowerCase().endsWith(".json")) jsons = [new TextDecoder().decode(buf)];
+      else jsons = (await unzipEntries(buf)).filter((x) => x.name.toLowerCase().endsWith(".json")).map((x) => x.text);
+      const mapped = []; const skipped = {};
+      for (const txt of jsons) {
+        let obj; try { obj = JSON.parse(txt); } catch { continue; }
+        const arr = obj.data || obj.tools || (Array.isArray(obj) ? obj : []);
+        for (const ft of arr) {
+          const m = mapFusionTool(ft);
+          if (m) mapped.push(m);
+          else if (ft?.type) skipped[ft.type] = (skipped[ft.type] || 0) + 1;
+        }
+      }
+      setImportSkipped(Object.entries(skipped));
+      if (!mapped.length) {
+        setLookupErr("No square/ball/chamfer end mills, drills, or taps found in that file. (In Fusion: Tool Library → right-click a library → Export → .tools file.)");
+        return;
+      }
+      setImportList(mapped.map((t) => ({ tool: t, checked: true })));
+    } catch (err) {
+      setLookupErr("Couldn't read that file (" + (err.message || "parse error") + "). Export from Fusion as .tools, or rename it .zip, extract, and upload the .json inside.");
+    }
+  };
+
+  const doImport = () => {
+    const add = importList.filter((x) => x.checked).map((x) => x.tool);
+    setTools((prev) => {
+      const have = new Set(prev.map((t) => (t.brand + "|" + t.pn).toLowerCase()));
+      return [...prev, ...add.filter((t) => !t.pn || !have.has((t.brand + "|" + t.pn).toLowerCase()))];
+    });
+    setImportList(null);
+  };
+
+  const runLookup = () => {
+    if (!lookupPn.trim()) return;
+    setLookupErr("");
+    setBatch((b) => ({ total: b.total + 1, done: b.done }));
+    setQueue((q) => [...q, { kind: "new", brand: lookupBrand.trim(), pn: lookupPn.trim() }]);
+    setLookupBrand(""); setLookupPn("");
+  };
+
+  const saveTool = (t) => {
+    setTools((prev) => [...prev.filter((x) => x.id !== t.id), t]);
+    setCandidates((p) => p.filter((c) => c.tool.id !== t.id));
+    setManual(null);
+  };
+  const dismissCandidate = (id) => setCandidates((p) => p.filter((c) => c.tool.id !== id));
+
+  return (
+    <section className="panel">
+      <h2>Tool library</h2>
+      <p className="hint">Look a tool up once, confirm it, and it's saved with its cutting data. Anything the web search can't find falls back to generic physics tables — clearly labeled.</p>
+
+      <div className="lookup-bar">
+        <input className="num txt" placeholder="Brand (Kennametal, Helical…)" value={lookupBrand} onChange={(e) => setLookupBrand(e.target.value)} />
+        <input className="num txt" placeholder="Part / order number" value={lookupPn} onChange={(e) => setLookupPn(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && runLookup()} />
+        <button className="btn primary" disabled={!lookupPn.trim()} onClick={runLookup}>Look up</button>
+        <button className="btn" onClick={() => setManual(emptyTool())}>Enter manually</button>
+      </div>
+      <div className="row-btns" style={{ marginTop: 8 }}>
+        <button className="btn" onClick={() => fileRef.current?.click()}>Import Fusion library (.tools / .json)</button>
+        <input ref={fileRef} type="file" accept=".tools,.json,.zip" style={{ display: "none" }} onChange={onFusionFile} />
+      </div>
+      {pendingCount > 0 && (
+        <div className="notice info">
+          <div className="prog-row">
+            <span>Searching the web for <strong>{jobLabel(active)}</strong>{queue.length > 0 ? ` · ${queue.length} more queued` : ""} — results land below for review; keep queuing.</span>
+            {batch.total > 1 && <span className="mono dim">{batch.done}/{batch.total}</span>}
+          </div>
+          {batch.total > 1 && <div className="prog"><i style={{ width: (100 * batch.done / batch.total).toFixed(1) + "%" }} /></div>}
+        </div>
+      )}
+      {pendingCount === 0 && batch.total > 1 && batch.done >= batch.total && (
+        <div className="notice info">Batch lookup complete — {batch.done} tool{batch.done > 1 ? "s" : ""} processed. Review the results below.</div>
+      )}
+      {lookupErr && <div className="notice amber">{lookupErr}</div>}
+
+      {importList && (
+        <div className="card">
+          <h3>Fusion import — {importList.filter((x) => x.checked).length} of {importList.length} selected</h3>
+          <p className="hint">Geometry imports instantly; cutting data doesn't come along. Afterward, hit <strong>Look up</strong> on as many tools as you want — they queue and process one at a time, landing below for your review. Or Edit to paste catalog values.</p>
+          {importSkipped.length > 0 && <p className="hint dim">Skipped (unsupported for now): {importSkipped.map(([t, n]) => `${n}× ${t}`).join(", ")}</p>}
+          <div className="import-list">
+            {importList.map((x, i) => (
+              <label key={x.tool.id} className="ck">
+                <input type="checkbox" checked={x.checked} onChange={() => setImportList((p) => p.map((y, j) => j === i ? { ...y, checked: !y.checked } : y))} />
+                <span className="strong">{toolLabel(x.tool, metric)}</span>
+                <span className="dim">{TOOL_TYPES[x.tool.type]} · {x.tool.flutes}FL{x.tool.metricTool ? " · metric" : ""}{x.tool.brand ? " · " + x.tool.brand : ""}</span>
+              </label>
+            ))}
+          </div>
+          <div className="row-btns">
+            <button className="btn primary" onClick={doImport}>Import selected</button>
+            <button className="btn" onClick={() => setImportList(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {candidates.map((c) => (
+        <ToolEditor key={c.tool.id} tool={c.tool} metric={metric}
+          heading={`Found: ${toolLabel(c.tool, metric)} — confirm before saving (${c.meta?.confidence || "?"} confidence)`}
+          sub={c.meta?.noData ? "Tool identified, but no published cutting data found. Generic tables will be used until you add numbers." : "Cutting data below came from the web — sanity-check it against the catalog."}
+          sources={c.meta?.sources} onSave={saveTool} onCancel={() => dismissCandidate(c.tool.id)} />
+      ))}
+      {manual && (
+        <ToolEditor tool={manual} metric={metric} heading="Manual entry" sub="Fill in geometry; add manufacturer cutting data per material group if you have it. Blank groups use generic tables." onSave={saveTool} onCancel={() => setManual(null)} />
+      )}
+
+      {tools.length === 0 && candidates.length === 0 && !manual ? (
+        <div className="empty">Library's empty. Look up any brand + part number above, import your Fusion tool library, or enter one manually.</div>
+      ) : tools.length > 0 && (
+        <>
+          <div className="filters" style={{ marginTop: 14 }}>
+            <select className="num auto" value={tFType} onChange={(e) => setTFType(e.target.value)}>
+              <option value="all">All types</option>
+              {Object.entries(TOOL_TYPES).map(([k, v]) => <option key={k} value={k}>{v}s</option>)}
+            </select>
+            {brands.length > 1 && (
+              <select className="num auto" value={tFBrand} onChange={(e) => setTFBrand(e.target.value)}>
+                <option value="all">All brands</option>
+                {brands.map((b) => <option key={b} value={b}>{b}</option>)}
+              </select>
+            )}
+            {diaOpts.length > 1 && (
+              <select className="num auto" value={tFDia} onChange={(e) => setTFDia(e.target.value)}>
+                <option value="all">All Ø</option>
+                {diaOpts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+            )}
+            <select className="num auto" value={tFData} onChange={(e) => setTFData(e.target.value)}>
+              <option value="all">Any data</option>
+              <option value="mfg">Manufacturer data</option>
+              <option value="gen">Generic / physics</option>
+            </select>
+            <span className="dim">{visible.length} of {tools.length}</span>
+          </div>
+          {sel.size > 0 && (
+            <div className="bulkbar">
+              <span className="strong">{sel.size} selected</span>
+              <button className="btn sm" onClick={bulkLookup}>Look up all</button>
+              <button className="btn sm danger" onClick={bulkDelete}>Delete</button>
+              <button className="btn sm" onClick={() => setSel(new Set())}>Clear</button>
+            </div>
+          )}
+          <table className="tbl">
+            <thead><tr>
+              <th className="ck-col"><input type="checkbox" checked={allVisSelected} onChange={toggleAll} title="Select all visible" /></th>
+              <th className="sortable" onClick={() => clickSort("name")}>Tool{arrow("name")}</th>
+              <th className="sortable" onClick={() => clickSort("type")}>Type{arrow("type")}</th>
+              <th className="sortable" onClick={() => clickSort("dia")}>Ø{arrow("dia")}</th>
+              <th className="sortable" onClick={() => clickSort("flutes")}>Fl{arrow("flutes")}</th>
+              <th className="sortable" onClick={() => clickSort("data")}>Data{arrow("data")}</th>
+              <th />
+            </tr></thead>
+            <tbody>
+              {visible.map((t) => {
+                const state = activeId === t.id ? "active" : queuedIds.has(t.id) ? "queued" : "";
+                return (
+                <tr key={t.id} className={sel.has(t.id) ? "row-sel" : ""}>
+                  <td className="ck-col"><input type="checkbox" checked={sel.has(t.id)} onChange={() => toggleSel(t.id)} /></td>
+                  <td><span className="strong">{toolLabel(t, metric)}</span><br />
+                    <span className="dim mono">{[t.brand, t.pn].filter(Boolean).join(" ")}{t.name && t.series ? " · " + t.name : ""}</span></td>
+                  <td>{TOOL_TYPES[t.type]}{t.type === "chamfer_mill" && t.angle ? <span className="dim"> {fmt(t.angle, 0)}°</span> : null}{t.metricTool ? <span className="pill gen" style={{ marginLeft: 5 }}>mm</span> : null}</td>
+                  <td className="mono">{toolDiaLabel(t, metric)}</td>
+                  <td className="mono">{t.flutes}</td>
+                  <td>{Object.keys(t.cutting || {}).length
+                    ? Object.keys(t.cutting).map((g) => (
+                        <span key={g} className="pill grp" style={{ background: groupColor(g) + "1E", color: groupColor(g) }}>
+                          <i className="dot" style={{ background: groupColor(g) }} />{g}
+                        </span>))
+                    : <span className="pill gen">generic</span>}</td>
+                  <td className="row-actions">
+                    <button className={"btn sm" + (state ? " queued" : "")} disabled={!!state} onClick={() => enqueueEnrich(t)}
+                      title={state === "active" ? "Searching the web now…" : state === "queued" ? "Waiting in the lookup queue" : "Search the web for manufacturer cutting data"}>
+                      {state === "active" ? "Searching…" : state === "queued" ? "Queued" : "Look up"}
+                    </button>
+                    <button className="btn sm" onClick={() => setManual({ ...t })}>Edit</button>
+                    <button className="btn sm danger" onClick={() => setTools((p) => p.filter((x) => x.id !== t.id))}>Delete</button>
+                  </td>
+                </tr>
+              );})}
+            </tbody>
+          </table>
+        </>
+      )}
+    </section>
+  );
+}
+
+function ToolEditor({ tool, heading, sub, sources, onSave, onCancel, metric }) {
+  const [t, setT] = useState(tool);
+  useEffect(() => setT(tool), [tool]);
+  const set = (k, v) => setT((p) => ({ ...p, [k]: v }));
+  const setCut = (grp, k, v) => setT((p) => {
+    const cutting = { ...(p.cutting || {}) };
+    const row = { ...(cutting[grp] || { src: "user" }) };
+    row[k] = v;
+    const hasAny = ["sfmLo", "sfmHi", "iptLo", "iptHi"].some((f) => Number.isFinite(row[f]));
+    if (hasAny) cutting[grp] = row; else delete cutting[grp];
+    return { ...p, cutting };
+  });
+  const [showGroups, setShowGroups] = useState(Object.keys(tool.cutting || {}).length > 0);
+
+  return (
+    <div className="card">
+      <h3>{heading}</h3>
+      {sub && <p className="hint">{sub}</p>}
+      <div className="grid-form">
+        <Field label="Brand"><input className="num txt" value={t.brand} onChange={(e) => set("brand", e.target.value)} /></Field>
+        <Field label="Part #"><input className="num txt" value={t.pn} onChange={(e) => set("pn", e.target.value)} /></Field>
+        <Field label="Series / family"><input className="num txt" placeholder="MaxiMet, FIREX, KenCut AL…" value={t.series || ""} onChange={(e) => set("series", e.target.value)} /></Field>
+        <Field label="Description / designation"><input className="num txt" value={t.name} onChange={(e) => set("name", e.target.value)} /></Field>
+        <Field label="Type">
+          <select className="num" value={t.type} onChange={(e) => set("type", e.target.value)}>
+            {Object.entries(TOOL_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select>
+        </Field>
+        <Field label={t.type === "chamfer_mill" ? "Max diameter" : t.type === "tap" ? "Nominal thread Ø" : "Diameter"} unit={metric || t.metricTool ? "mm" : "in"}><NumInput value={t.dia} onChange={(v) => set("dia", v)} metric={metric || !!t.metricTool} isLength /></Field>
+        <Field label="Flutes"><input className="num" type="number" min="1" value={t.flutes} onChange={(e) => set("flutes", parseInt(e.target.value) || 1)} disabled={t.type === "drill"} /></Field>
+        <Field label="Coating"><input className="num txt" value={t.coating} onChange={(e) => set("coating", e.target.value)} /></Field>
+        <Field label="LOC" unit={metric || t.metricTool ? "mm" : "in"}><NumInput value={t.loc ?? NaN} onChange={(v) => set("loc", v)} metric={metric || !!t.metricTool} isLength /></Field>
+        {t.type === "tap" && (
+          <Field label="Thread pitch (per rev)" unit={metric || t.metricTool ? "mm" : "in"}><NumInput value={t.pitch ?? NaN} onChange={(v) => set("pitch", v)} metric={metric || !!t.metricTool} isLength digits={metric || t.metricTool ? 3 : 5} /></Field>
+        )}
+        {t.type === "chamfer_mill" && (
+          <>
+            <Field label="Included angle" unit="deg"><input className="num" type="number" step="any" value={Number.isFinite(t.angle) ? t.angle : ""} placeholder="90" onChange={(e) => set("angle", e.target.value === "" ? null : parseFloat(e.target.value))} /></Field>
+            <Field label="Tip Ø (0 if pointed)" unit={metric || t.metricTool ? "mm" : "in"}><NumInput value={t.tipDia ?? NaN} onChange={(v) => set("tipDia", v)} metric={metric || !!t.metricTool} isLength /></Field>
+          </>
+        )}
+      </div>
+      <label className="ck">
+        <input type="checkbox" checked={!!t.metricTool} onChange={(e) => set("metricTool", e.target.checked)} />
+        Metric tool — callouts show in mm (8.5 mm drill, M10×1.5) but feeds &amp; speeds stay in your programming units
+      </label>
+      {t.notes && <p className="hint">{t.notes}</p>}
+      {sources?.length > 0 && <p className="hint dim">Sources: {sources.slice(0, 3).map((s, i) => <a key={i} href={s} target="_blank" rel="noreferrer">[{i + 1}]</a>)}</p>}
+
+      <button className="btn sm" onClick={() => setShowGroups(!showGroups)}>{showGroups ? "Hide" : "Show"} cutting data by material group</button>
+      {showGroups && (
+        <div className="cut-grid">
+          <div className="cut-head"><span>Group</span><span>SFM lo</span><span>SFM hi</span><span>{t.type === "drill" ? "IPR lo" : "IPT lo"}</span><span>{t.type === "drill" ? "IPR hi" : "IPT hi"}</span></div>
+          {Object.keys(GROUPS).map((g) => {
+            const row = t.cutting?.[g] || {};
+            return (
+              <div className="cut-row" key={g}>
+                <span className="mono dim" title={GROUPS[g].ex}><i className="dot" style={{ background: groupColor(g) }} />{g}</span>
+                {["sfmLo", "sfmHi", "iptLo", "iptHi"].map((f) => (
+                  <input key={f} className="num sm-in" type="number" step="any" value={Number.isFinite(row[f]) ? row[f] : ""}
+                    onChange={(e) => setCut(g, f, e.target.value === "" ? NaN : parseFloat(e.target.value))} />
+                ))}
+              </div>
+            );
+          })}
+          <p className="hint dim">Feed values always in inches here (per tooth for mills, per rev for drills). Leave a group blank to use generic tables for it.</p>
+        </div>
+      )}
+
+      <div className="row-btns">
+        <button className="btn primary" onClick={() => onSave(t)}>Save to library</button>
+        <button className="btn" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   CALCULATOR TAB
+   ============================================================ */
+function Calculator({ machines, tools, metric, goTo }) {
+  const [machineId, setMachineId] = useState("");
+  const [toolId, setToolId] = useState("");
+  const [group, setGroup] = useState("N1");
+  const [mode, setMode] = useState("rough");
+  const [op, setOp] = useState("adaptive");
+  const [sfm, setSfm] = useState(1200);
+  const [ae, setAe] = useState(0.05);
+  const [ap, setAp] = useState(0.5);
+  const [fz, setFz] = useState(0.005);
+  const [targetChip, setTargetChip] = useState(0.004);
+  const [ipr, setIpr] = useState(0.006);
+  const [stickout, setStickout] = useState(NaN); // optional; blank = assume 3×Ø
+  const [seedSrc, setSeedSrc] = useState("generic");
+  const [fType, setFType] = useState("all");
+  const [fBrand, setFBrand] = useState("all");
+  const [fDia, setFDia] = useState("all");
+  const [fData, setFData] = useState("all");
+
+  const machine = machines.find((m) => m.id === machineId) || null;
+  const tool = tools.find((t) => t.id === toolId) || null;
+
+  // material is the primary filter: tools not rated for the group drop out (no data = assume it cuts everything)
+  const brands = useMemo(() => [...new Set(tools.map((t) => t.brand).filter(Boolean))].sort(), [tools]);
+  const dias = useMemo(() => [...new Set(tools.map((t) => t.dia).filter(Number.isFinite))].sort((a, b) => a - b), [tools]);
+  const filteredTools = useMemo(() => tools.filter((t) =>
+    canCut(t, group) &&
+    (fType === "all" || t.type === fType) &&
+    (fBrand === "all" || t.brand === fBrand) &&
+    (fDia === "all" || String(t.dia) === fDia) &&
+    (fData === "all" || (fData === "mfg" ? hasMfgData(t) : !hasMfgData(t)))
+  ).sort((a, b) => a.dia - b.dia || (a.brand || "").localeCompare(b.brand || "")), [tools, group, fType, fBrand, fDia, fData]);
+  // keep a selected tool visible in the dropdown even if the filters no longer match it
+  const toolOptions = tool && !filteredTools.some((t) => t.id === tool.id) ? [tool, ...filteredTools] : filteredTools;
+
+  // pick sensible default op per tool type
+  useEffect(() => {
+    if (!tool) return;
+    if (tool.type === "drill") setOp("drill");
+    else if (tool.type === "chamfer_mill") setOp("chamfer");
+    else if (tool.type === "tap") setOp("tap");
+    else if (op === "drill" || op === "chamfer" || op === "tap") setOp("adaptive");
+    if (tool.type !== "ball_endmill" && op === "finish3d") setOp("side");
+  }, [toolId]); // eslint-disable-line
+
+  // reseed on tool / material / mode change
+  useEffect(() => {
+    if (!tool) return;
+    const s = seedParams(tool, group, mode, op);
+    setSfm(s.sfm); setSeedSrc(s.source);
+    if (tool.type === "drill") { if (s.ipt) setIpr(s.ipt); }
+    else if (s.ipt) { setFz(s.ipt); setTargetChip(+(s.ipt * (mode === "rough" ? 0.9 : 0.8)).toFixed(5)); }
+    // engagement defaults
+    if (tool.type === "chamfer_mill") {
+      const half = (((tool.angle || 90) / 2) * Math.PI) / 180;
+      const maxDepth = ((tool.dia - (tool.tipDia || 0)) / 2) / Math.tan(half);
+      setAp(+Math.min(0.04, maxDepth * 0.75).toFixed(4));
+    } else if (tool.type !== "drill" && tool.type !== "tap") {
+      if (mode === "finish") { setAe(GROUPS[group].stock[0]); setAp(Math.min(tool.loc || tool.dia * 2, tool.dia * 2)); }
+      else if (op === "adaptive") { setAe(+(tool.dia * 0.12).toFixed(4)); setAp(Math.min(tool.loc || tool.dia * 1.5, tool.dia * 1.5)); }
+      else if (op === "slot") { setAe(tool.dia); setAp(+(tool.dia * 0.5).toFixed(4)); }
+      else { setAe(+(tool.dia * 0.25).toFixed(4)); setAp(+(tool.dia * 1).toFixed(4)); }
+    }
+  }, [toolId, group, mode, op]); // eslint-disable-line
+
+  const result = useMemo(() => {
+    if (!tool) return null;
+    const opUse = tool.type === "drill" ? "drill" : tool.type === "chamfer_mill" ? "chamfer" : tool.type === "tap" ? "tap" : op;
+    return computeCut({ tool, machine, group, op: opUse, mode, sfm, ae, ap, targetChip, fz, ipr, stickout });
+  }, [tool, machine, group, op, mode, sfm, ae, ap, targetChip, fz, ipr, stickout]);
+
+  const setRpmDirect = (rpm) => {
+    if (!tool || !rpm) return;
+    let Deff = tool.dia;
+    if (tool.type === "ball_endmill" && op === "finish3d" && ap > 0 && ap < tool.dia / 2) Deff = 2 * Math.sqrt(ap * (tool.dia - ap));
+    if (tool.type === "chamfer_mill") {
+      const half = (((tool.angle || 90) / 2) * Math.PI) / 180;
+      Deff = Math.min(Math.max((tool.tipDia || 0) + 2 * ap * Math.tan(half), tool.tipDia || 0.02), tool.dia);
+    }
+    setSfm(Math.round((rpm * Math.PI * Deff) / 12));
+  };
+
+  const g = GROUPS[group];
+  const isDrill = tool?.type === "drill";
+  const isChamfer = tool?.type === "chamfer_mill";
+  const isTap = tool?.type === "tap";
+  const isMill = tool && !isDrill && !isChamfer && !isTap;
+  const lenU = metric ? "mm" : "in";
+  const feedDisp = (v) => metric ? fmt(v * IN_MM, 0) + " mm/min" : fmt(v, 1) + " in/min";
+  const thouDisp = (v, d = 5) => metric ? fmt(v * IN_MM, 3) + " mm" : fmt(v, d) + '"';
+
+  return (
+    <section className="calc">
+      <div className="panel">
+        <div className="sel-row">
+          <Field label="Machine">
+            <select className="num" value={machineId} onChange={(e) => setMachineId(e.target.value)}>
+              <option value="">— no machine (no RPM clamp) —</option>
+              {machines.map((m) => <option key={m.id} value={m.id}>{m.name} · {fmt(m.maxRpm, 0)} RPM</option>)}
+            </select>
+          </Field>
+          <Field label="Material">
+            <div className="mat-wrap">
+              <i className="dot lg" style={{ background: groupColor(group) }} title={"ISO " + group[0]} />
+              <select className="num" value={group} onChange={(e) => setGroup(e.target.value)}>
+                {Object.keys(GROUPS).map((k) => <option key={k} value={k}>{GROUPS[k].label} — {GROUPS[k].ex}</option>)}
+              </select>
+            </div>
+          </Field>
+        </div>
+        {tools.length > 0 && (
+          <div className="filters">
+            <span className="chip-label">Tools</span>
+            {["all", ...Object.keys(TOOL_TYPES)].map((k) => (
+              <Chip key={k} active={fType === k} onClick={() => setFType(k)}>{k === "all" ? "All types" : TOOL_TYPES[k]}</Chip>
+            ))}
+            {brands.length > 1 && (
+              <select className="num auto" value={fBrand} onChange={(e) => setFBrand(e.target.value)}>
+                <option value="all">All brands</option>
+                {brands.map((b) => <option key={b} value={b}>{b}</option>)}
+              </select>
+            )}
+            {dias.length > 1 && (
+              <select className="num auto" value={fDia} onChange={(e) => setFDia(e.target.value)}>
+                <option value="all">All Ø</option>
+                {dias.map((d) => <option key={d} value={String(d)}>{diaLabel(d, metric)}</option>)}
+              </select>
+            )}
+            <select className="num auto" value={fData} onChange={(e) => setFData(e.target.value)}>
+              <option value="all">Any data</option>
+              <option value="mfg">Manufacturer data</option>
+              <option value="gen">Generic / physics</option>
+            </select>
+          </div>
+        )}
+        <div className="sel-row">
+          <Field label={`Tool — ${filteredTools.length} of ${tools.length} match ${group}` + (fType !== "all" || fBrand !== "all" || fDia !== "all" || fData !== "all" ? " + filters" : "")}>
+            <select className="num" value={toolId} onChange={(e) => setToolId(e.target.value)}>
+              <option value="">— select a tool —</option>
+              {toolOptions.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {toolLabel(t, metric)} · {t.flutes}FL {TOOL_TYPES[t.type]}{hasMfgData(t) ? "" : " · generic"}{!canCut(t, group) ? ` · not rated for ${group}` : ""}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+        {tool && !canCut(tool, group) && (
+          <div className="notice amber">This tool has manufacturer data but none for {group} — running generic {group} tables. Double-check the geometry/coating actually suits this material (aluminum-specific tools in steel = bad time).</div>
+        )}
+
+        {!tool ? (
+          <div className="empty">
+            Pick a tool to calculate. {tools.length === 0 && <>Nothing in the library yet — <button className="linky" onClick={() => goTo("tools")}>add your first tool</button>.</>}
+            {machines.length === 0 && <> No machines saved either — <button className="linky" onClick={() => goTo("machines")}>add one</button> so RPM gets clamped to reality.</>}
+          </div>
+        ) : (
+          <>
+            <div className="chip-rows">
+              {isMill && (
+                <div className="chip-row">
+                  <span className="chip-label">Operation</span>
+                  <Chip active={op === "adaptive"} onClick={() => setOp("adaptive")}>Adaptive / dynamic</Chip>
+                  <Chip active={op === "side"} onClick={() => setOp("side")}>Side milling</Chip>
+                  <Chip active={op === "slot"} onClick={() => setOp("slot")}>Slotting</Chip>
+                  {tool.type === "ball_endmill" && <Chip active={op === "finish3d"} onClick={() => setOp("finish3d")}>3D finishing</Chip>}
+                </div>
+              )}
+              <div className="chip-row">
+                {!isChamfer && !isTap && (
+                  <>
+                    <span className="chip-label">Mode</span>
+                    <Chip active={mode === "rough"} onClick={() => setMode("rough")}>Roughing</Chip>
+                    <Chip active={mode === "finish"} onClick={() => setMode("finish")}>Finishing</Chip>
+                  </>
+                )}
+                <span className={"pill " + (seedSrc === "manufacturer" ? "mfg" : "gen")}>
+                  {seedSrc === "manufacturer" ? "seeded from manufacturer data" : "seeded from generic tables"}
+                </span>
+              </div>
+            </div>
+
+            <div className="grid-form">
+              <Field label="Cutting speed" unit={metric ? "m/min" : "SFM"}>
+                <NumInput value={metric ? sfm * 0.3048 : sfm} onChange={(v) => setSfm(metric ? v / 0.3048 : v)} digits={0} />
+              </Field>
+              <Field label="Spindle speed" unit="RPM">
+                <NumInput value={result?.rpm || 0} onChange={setRpmDirect} digits={0} />
+              </Field>
+              {isChamfer && (
+                <>
+                  <Field label="Chamfer depth (axial)" unit={lenU}>
+                    <NumInput value={ap} onChange={setAp} metric={metric} isLength />
+                  </Field>
+                  <Field label="Feed per tooth (fz)" unit={lenU}>
+                    <NumInput value={fz} onChange={setFz} metric={metric} isFeedPerTooth digits={metric ? 3 : 5} />
+                  </Field>
+                </>
+              )}
+              {isTap && (
+                <Field label="Thread pitch (locked)" unit={tool.metricTool ? "mm/rev" : "in/rev"}>
+                  <input className="num" disabled value={Number.isFinite(tool.pitch) ? (tool.metricTool ? fmt(tool.pitch * IN_MM, 3) : fmt(tool.pitch, 5)) : "— set in library"} readOnly />
+                </Field>
+              )}
+              {isMill && (
+                <>
+                  <Field label={op === "adaptive" ? "Optimal load (radial, ae)" : op === "slot" ? "Slot width (= Ø)" : "Stepover (radial, ae)"} unit={lenU}>
+                    <NumInput value={op === "slot" ? tool.dia : ae} onChange={setAe} metric={metric} isLength disabled={op === "slot"} />
+                  </Field>
+                  <Field label="Stepdown (axial, ap)" unit={lenU}>
+                    <NumInput value={ap} onChange={setAp} metric={metric} isLength />
+                  </Field>
+                  {op === "adaptive" ? (
+                    <Field label="Target chip thickness" unit={lenU}>
+                      <NumInput value={targetChip} onChange={setTargetChip} metric={metric} isFeedPerTooth digits={metric ? 3 : 5} />
+                    </Field>
+                  ) : (
+                    <Field label="Feed per tooth (fz)" unit={lenU}>
+                      <NumInput value={fz} onChange={setFz} metric={metric} isFeedPerTooth digits={metric ? 3 : 5} />
+                    </Field>
+                  )}
+                  <Field label="Stickout (for chatter est.)" unit={lenU}>
+                    <NumInput value={stickout} onChange={setStickout} metric={metric} isLength />
+                  </Field>
+                </>
+              )}
+              {isDrill && (
+                <Field label="Feed per rev" unit={metric ? "mm/rev" : "in/rev"}>
+                  <NumInput value={ipr} onChange={setIpr} metric={metric} isFeedPerTooth digits={metric ? 3 : 4} />
+                </Field>
+              )}
+            </div>
+            {op === "adaptive" && !isDrill && (
+              <p className="hint">Adaptive uses <strong>optimal load</strong> (Fusion's term) = constant radial engagement. Feed is chip-thinning compensated to hold your target chip. Conventional side milling uses plain <strong>stepover</strong> + fz because engagement spikes in corners.</p>
+            )}
+          </>
+        )}
+      </div>
+
+      {tool && result && (
+        <div className="dro">
+          <div className="dro-main">
+            <div className="dro-cell big">
+              <span className="dro-label">Spindle</span>
+              <span className={"dro-val" + (result.clamped ? " clamp" : "")}>{fmt(result.rpm, 0)}</span>
+              <span className="dro-unit">RPM{result.clamped ? " (clamped)" : ""}</span>
+            </div>
+            <div className="dro-cell big">
+              <span className="dro-label">Feed</span>
+              <span className="dro-val">{metric ? fmt(result.feed * IN_MM, 0) : fmt(result.feed, 1)}</span>
+              <span className="dro-unit">{metric ? "mm/min" : "in/min"}</span>
+            </div>
+          </div>
+          <div className="dro-grid">
+            <DroStat label="Actual SFM" v={metric ? fmt(result.sfmActual * 0.3048, 0) + " m/min" : fmt(result.sfmActual, 0)} />
+            <DroStat label={isDrill ? "Feed / rev" : isTap ? "Pitch / rev" : "Programmed fz"} v={thouDisp(result.fzProg)} />
+            {isMill && <DroStat label="Actual chip" v={op === "adaptive" ? thouDisp(targetChip) : thouDisp(result.chipActual ?? fz)} />}
+            <DroStat label="MRR" v={metric ? fmt(result.mrr * 16.387, 1) + " cm³/min" : fmt(result.mrr, 2) + " in³/min"} />
+            <DroStat label="Power @ tool" v={fmt(result.hp, 2) + " HP"} />
+            <DroStat label="Torque @ tool" v={fmt(result.torque, 2) + " ft-lb"} />
+          </div>
+          {Number.isFinite(result.hpAvail) && result.hp > 0 && (
+            <div className="pbar-wrap">
+              <div className="pbar-top">
+                <span>Spindle load @ {fmt(result.rpm, 0)} RPM {result.hpSrc === "curve" ? "· power curve" : "· flat rating (import a curve for real numbers)"}</span>
+                <span className="mono">{fmt(result.hp, 2)} / {fmt(result.hpAvail, 1)} HP · {result.hpPct > 9.99 ? ">999" : fmt(result.hpPct * 100, 0)}%</span>
+              </div>
+              <div className="pbar">
+                <i className={result.hpPct > 1 ? "r" : result.hpPct > 0.8 ? "a" : "g"} style={{ width: Math.min(result.hpPct * 100, 100) + "%" }} />
+              </div>
+            </div>
+          )}
+          {result.chatter && (
+            <div className={"notice " + (result.chatter.level === "high" ? "red" : result.chatter.level === "elevated" ? "amber" : "info")}>
+              <strong>Chatter / deflection risk: {result.chatter.level}.</strong> Est. tip deflection {fmt(result.chatter.delta * 1000, 2)} thou at {fmt(result.chatter.L, 2)}" stickout (L/D {fmt(result.chatter.ld, 1)}, ~{fmt(result.chatter.Ft, 0)} lbf tangential){result.chatter.assumedL ? " — stickout assumed 3×Ø, set it above to refine" : ""}.
+              {result.chatter.level === "high" ? " This will almost certainly show on the part: shorten stickout, drop DOC/WOC, or step up in diameter." : result.chatter.level === "elevated" ? " Watch walls and corners; a shorter stickout or lighter radial buys margin." : " Heuristic only — guaranteed stability needs tap-testing, but nothing here screams."}
+            </div>
+          )}
+          {result.warnings.map((w, i) => <div key={i} className={"notice " + (w.level === "red" ? "red" : "amber")}>{w.msg}</div>)}
+          {result.info.map((s, i) => <div key={i} className="notice info">{s}</div>)}
+          {mode === "finish" && !isDrill && !isChamfer && (
+            <div className="notice info">Stock-to-leave for {group}: {thouDisp(g.stock[0], 3)}–{thouDisp(g.stock[1], 3)} radial · roughly half that axial on floors. Add a spring pass on toleranced or thin walls.</div>
+          )}
+          {seedSrc === "generic" && <div className="notice info">Running on generic {group} tables for this tool — conservative starting points. Add manufacturer data in the library to sharpen them.</div>}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function DroStat({ label, v }) {
+  return (
+    <div className="dro-cell">
+      <span className="dro-label">{label}</span>
+      <span className="dro-val sm">{v}</span>
+    </div>
+  );
+}
+
+/* ============================================================
+   STYLES — "machine enamel" light industrial + DRO readout
+   ============================================================ */
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Archivo+Expanded:wght@600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+:root{
+  --bg:#E7E8E4; --panel:#FDFDFC; --ink:#22262B; --label:#6B7280; --line:#D2D5CF;
+  --accent:#B96A00; --accent-ink:#8F5200;
+  --dro-bg:#171B1E; --dro-line:#2A3237; --dro-green:#4FE38C; --dro-dim:#7C8A85;
+  --amber:#A26A00; --amber-bg:#FBF1DC; --red:#B03B36; --red-bg:#F9E7E5; --info-bg:#EDF0EA; --mfg:#1E6E45;
+}
+*{box-sizing:border-box}
+.app{min-height:100vh;background:var(--bg);color:var(--ink);font-family:'Archivo',system-ui,sans-serif;font-size:14px;line-height:1.45;padding:0 0 48px}
+.mono{font-family:'IBM Plex Mono',ui-monospace,monospace}
+.strong{font-weight:600}.dim{color:var(--label);font-size:12px}
+
+.topbar{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:18px 22px 10px;flex-wrap:wrap}
+.topbar-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.brand{display:flex;gap:12px;align-items:center}
+.brand-mark{width:14px;height:34px;background:repeating-linear-gradient(45deg,var(--accent),var(--accent) 5px,var(--ink) 5px,var(--ink) 10px);border-radius:2px;flex:none}
+.brand h1{font-family:'Archivo Expanded','Archivo',sans-serif;font-size:19px;font-weight:700;letter-spacing:.01em;margin:0;text-transform:uppercase}
+.brand p{margin:1px 0 0;color:var(--label);font-size:12px}
+.unit-toggle{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--panel)}
+.unit-toggle button{border:0;background:transparent;padding:6px 14px;font:inherit;font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;color:var(--label)}
+.unit-toggle button.on{background:var(--ink);color:#fff}
+
+.tabs{display:flex;gap:4px;padding:0 22px;border-bottom:1px solid var(--line)}
+.tab{border:0;background:transparent;font:inherit;font-weight:500;padding:9px 14px;cursor:pointer;color:var(--label);border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab.on{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
+.tab:focus-visible,.btn:focus-visible,.chip:focus-visible,.num:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+
+main{padding:18px 22px;max-width:1100px;margin:0 auto}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 18px 16px;margin-bottom:16px}
+.panel h2{margin:0 0 4px;font-size:16px;font-weight:700}
+.hint{color:var(--label);font-size:12.5px;margin:4px 0 12px}
+.loading,.empty{padding:28px;text-align:center;color:var(--label)}
+.empty{background:var(--panel);border:1px dashed var(--line);border-radius:10px;margin-top:12px}
+.linky{border:0;background:none;color:var(--accent-ink);font:inherit;text-decoration:underline;cursor:pointer;padding:0}
+
+.grid-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px 12px;margin:8px 0 12px}
+.sel-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:12px}
+.field{display:flex;flex-direction:column;gap:4px}
+.field-label{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--label)}
+.field-label em{font-style:normal;color:var(--accent-ink);margin-left:5px;text-transform:none}
+.num{font-family:'IBM Plex Mono',monospace;font-size:14px;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink);width:100%}
+.num:disabled{background:var(--bg);color:var(--label)}
+select.num{font-family:'Archivo',sans-serif}
+.txt{font-family:'Archivo',sans-serif}
+
+.row-btns{display:flex;gap:8px;margin-top:6px}
+.btn{border:1px solid var(--line);background:var(--panel);color:var(--ink);font:inherit;font-weight:600;font-size:13px;padding:8px 14px;border-radius:6px;cursor:pointer}
+.btn:hover{border-color:var(--ink)}
+.btn.primary{background:var(--ink);border-color:var(--ink);color:#fff}
+.btn.primary:hover{background:#000}
+.btn.primary:disabled{opacity:.55;cursor:default}
+.btn.sm{padding:4px 9px;font-size:12px}
+.btn.danger{color:var(--red)}
+.row-actions{display:flex;gap:6px;justify-content:flex-end}
+
+.tbl{width:100%;border-collapse:collapse;margin-top:12px}
+.tbl th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--label);padding:6px 8px;border-bottom:1px solid var(--line)}
+.tbl td{padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+.pill{display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:11px;padding:2px 8px;border-radius:99px}
+.pill.mfg{background:#E2F1E8;color:var(--mfg)}
+.pill.gen{background:var(--info-bg);color:var(--label)}
+.pill.grp{margin-right:4px;font-weight:600}
+.dot{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:baseline}
+.dot.lg{width:15px;height:15px;border-radius:4px;flex:none;margin:0}
+.mat-wrap{display:flex;align-items:center;gap:8px}
+.mat-wrap select{flex:1;min-width:0}
+.ck{display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--label);margin:0 0 12px;flex-wrap:wrap;cursor:pointer}
+.ck input{accent-color:var(--accent)}
+.iso-legend{display:inline-flex;gap:10px;margin-left:10px;font-family:'IBM Plex Mono',monospace;font-size:11px}
+.filters{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:2px 0 12px}
+.num.auto{width:auto;padding:5px 8px;font-size:12.5px;border-radius:99px}
+.btn.queued{opacity:.55;cursor:default}
+.prog-row{display:flex;justify-content:space-between;gap:12px;align-items:center}
+.prog{height:6px;background:#D8DCD4;border-radius:99px;overflow:hidden;margin-top:7px}
+.prog i{display:block;height:100%;background:var(--accent);border-radius:99px;transition:width .4s ease}
+.bulkbar{display:flex;gap:8px;align-items:center;background:var(--info-bg);border:1px solid var(--line);border-radius:8px;padding:7px 12px;margin-bottom:8px}
+th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
+th.sortable:hover{color:var(--ink)}
+.ck-col{width:28px}
+tr.row-sel td{background:#FBF4E6}
+.spark{display:block}
+.spark-line{stroke:var(--accent);stroke-width:1.6}
+.spark-fill{fill:var(--accent);opacity:.12}
+.dro .spark-line{stroke:var(--dro-green)}
+.curve-cell{display:flex;flex-direction:column;gap:2px}
+.pbar-wrap{margin-top:12px;border:1px solid var(--dro-line);border-radius:8px;padding:10px 12px}
+.pbar-top{display:flex;justify-content:space-between;gap:12px;font-size:11px;color:var(--dro-dim);font-family:'IBM Plex Mono',monospace;margin-bottom:7px;flex-wrap:wrap}
+.pbar{height:10px;background:#22292E;border-radius:99px;overflow:hidden}
+.pbar i{display:block;height:100%;border-radius:99px;transition:width .3s ease}
+.pbar i.g{background:var(--dro-green);box-shadow:0 0 10px rgba(79,227,140,.4)}
+.pbar i.a{background:#F5C445;box-shadow:0 0 10px rgba(245,196,69,.4)}
+.pbar i.r{background:#EE6A5F;box-shadow:0 0 10px rgba(238,106,95,.5)}
+.import-list{display:flex;flex-direction:column;gap:4px;max-height:260px;overflow:auto;margin:8px 0;padding:8px;border:1px solid var(--line);border-radius:8px;background:#fff}
+.import-list .ck{margin:0}
+
+.lookup-bar{display:grid;grid-template-columns:1fr 1.2fr auto auto;gap:8px;align-items:center}
+@media(max-width:720px){.lookup-bar{grid-template-columns:1fr 1fr}.dro-main{grid-template-columns:1fr}}
+.card{border:1px solid var(--accent);border-radius:10px;padding:14px;margin:14px 0;background:#FFFDF8}
+.card h3{margin:0 0 2px;font-size:14px}
+.cut-grid{margin:10px 0}
+.cut-head,.cut-row{display:grid;grid-template-columns:52px repeat(4,1fr);gap:6px;align-items:center;margin-bottom:4px}
+.cut-head span{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--label)}
+.sm-in{padding:5px 7px;font-size:12.5px}
+
+.chip-rows{display:flex;flex-direction:column;gap:8px;margin:4px 0 12px}
+.chip-row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.chip-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--label);margin-right:4px;min-width:70px}
+.chip{border:1px solid var(--line);background:#fff;font:inherit;font-size:12.5px;font-weight:500;padding:5px 12px;border-radius:99px;cursor:pointer;color:var(--ink)}
+.chip-on{background:var(--ink);border-color:var(--ink);color:#fff}
+
+.dro{background:var(--dro-bg);border-radius:12px;padding:18px;border:1px solid #000;box-shadow:inset 0 1px 0 rgba(255,255,255,.06)}
+.dro-main{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+.dro-cell{display:flex;flex-direction:column;gap:2px;padding:10px 12px;border:1px solid var(--dro-line);border-radius:8px}
+.dro-cell.big .dro-val{font-size:38px}
+.dro-label{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--dro-dim);font-family:'IBM Plex Mono',monospace}
+.dro-val{font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:16px;color:var(--dro-green);text-shadow:0 0 12px rgba(79,227,140,.35)}
+.dro-val.sm{font-size:16px}
+.dro-val.clamp{color:#F5C445;text-shadow:0 0 12px rgba(245,196,69,.35)}
+.dro-unit{font-size:11px;color:var(--dro-dim);font-family:'IBM Plex Mono',monospace}
+.dro-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:10px}
+
+.notice{border-radius:8px;padding:9px 12px;font-size:12.5px;margin-top:8px}
+.notice.amber{background:var(--amber-bg);color:var(--amber);border:1px solid #E3C589}
+.notice.red{background:var(--red-bg);color:var(--red);border:1px solid #E0A49F}
+.notice.info{background:var(--info-bg);color:#4B5563;border:1px solid var(--line)}
+.dro .notice.info{background:#20262A;color:#9AA8A2;border-color:var(--dro-line)}
+.dro .notice.amber{background:#2A2415;border-color:#5C4A1E;color:#E8C36B}
+.dro .notice.red{background:#2C1A18;border-color:#6B322E;color:#EE8A82}
+
+@media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+`;
