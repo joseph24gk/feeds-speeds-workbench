@@ -1,8 +1,8 @@
 name: Deploy GitHub Pages
 
 on:
-  push:
-    branches: [main]
+  # Enable Pages first, then run manually from the Actions tab.
+  # Add the push trigger back after the repo is public or private Pages is available.
   workflow_dispatch:
 
 permissions:
