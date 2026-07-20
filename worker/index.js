@@ -10,8 +10,8 @@ export default {
     const url = new URL(request.url);
     try {
       if (request.method !== "POST") return json({ error: "POST required" }, 405);
-      if (url.pathname === "/api/tool-lookup") return toolLookup(request, env);
-      if (url.pathname === "/api/curve-digitize") return curveDigitize(request, env);
+      if (url.pathname === "/api/tool-lookup") return await toolLookup(request, env);
+      if (url.pathname === "/api/curve-digitize") return await curveDigitize(request, env);
       return json({ error: "Not found" }, 404);
     } catch (err) {
       return json({ error: err.message || "Worker error" }, 500);
