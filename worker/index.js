@@ -12,6 +12,7 @@ export default {
       if (request.method !== "POST") return json({ error: "POST required" }, 405);
       if (url.pathname === "/api/tool-lookup") return await toolLookup(request, env);
       if (url.pathname === "/api/curve-digitize") return await curveDigitize(request, env);
+      if (url.pathname === "/api/machine-curves") return await machineCurves(request, env);
       return json({ error: "Not found" }, 404);
     } catch (err) {
       return json({ error: err.message || "Worker error" }, 500);
@@ -22,77 +23,175 @@ export default {
 async function toolLookup(request, env) {
   const { brand, pn } = await request.json();
   if (!brand || !pn) return json({ error: "brand and pn are required" }, 400);
-  const prompt = `Search the web for the cutting tool "${brand} ${pn}" from its manufacturer or official catalog/distributor data.
+  const prompt = `Search the web for the cutting tool "${brand} ${pn}" (a milling cutter, drill, or tap part/order number from a tooling manufacturer).
 
-Return ONLY a raw JSON object matching this schema:
+Identify the tool and its manufacturer-published cutting data, from the manufacturer or official catalog/distributor data. Respond with ONLY a raw JSON object, no markdown fences, no preamble, matching exactly this schema:
 {
  "found": true|false,
  "confidence": "high"|"medium"|"low",
  "tool": {
-   "brand": string,
-   "pn": string,
-   "series": string,
-   "name": string,
+   "brand": string, "pn": string,
+   "series": string (SHORT family/series name only, like "MaxiMet", "KenCut AL", "FIREX", "HEV" — no part numbers, no catalog designation codes, no flute counts),
+   "name": string (fuller description incl. catalog designation if any),
    "type": "square_endmill"|"ball_endmill"|"chamfer_mill"|"drill"|"tap",
-   "dia_in": number,
-   "flutes": number,
-   "coating": string,
-   "loc_in": number|null,
-   "pitch_in": number|null,
-   "metric_callout": true|false,
-   "included_angle_deg": number|null,
-   "tip_dia_in": number|null
+   "dia_in": number (max cutting diameter in inches; for taps use nominal thread major diameter),
+   "flutes": number, "coating": string, "loc_in": number|null (length of cut, inches),
+   "pitch_in": number|null (taps only: thread pitch in inches per rev — convert metric pitch: mm/25.4),
+   "metric_callout": true|false (true if the tool is specified in metric, e.g. an 8.5mm drill or M10×1.5 tap),
+   "included_angle_deg": number|null (chamfer mills only: full included angle, e.g. 90),
+   "tip_dia_in": number|null (chamfer mills only: flat/tip diameter, 0 if pointed)
  },
  "cutting": [
-   { "group": "N1"|"N2"|"N3"|"N4"|"P1"|"P2"|"P3"|"M1"|"M2"|"M3"|"K1"|"S1"|"S2"|"H1",
+   { "group": one of "N1","N2","N3","N4","P1","P2","P3","M1","M2","M3","K1","S1","S2","H1",
      "sfm_lo": number, "sfm_hi": number,
-     "ipt_lo": number, "ipt_hi": number }
+     "ipt_lo": number, "ipt_hi": number (feed per tooth in inches; for drills use feed per REV) }
  ],
- "sources": [string],
- "notes": string
+ "sources": [array of source URLs],
+ "notes": string (1-2 sentences: intended materials, anything important)
 }
 
-Use inches internally. Convert metric diameter, LOC, pitch, feed per tooth, and feed per rev into inches. Prefer manufacturer-published cutting data. If the exact tool is identified but cutting ranges are unavailable, set found true and cutting to an empty array.`;
+Group key: N=nonferrous (N1 wrought alum, N2 cast alum low-Si, N3 cast alum high-Si >12%, N4 brass/copper), P=steel (P1 low carbon/free-machining, P2 medium-carbon/alloy, P3 alloy pre-hard 28-38 HRC), M=stainless (M1 free-machining/303, M2 austenitic 304/316, M3 PH/duplex 17-4/2205), K1=cast iron, S1=titanium alloys, S2=nickel superalloys, H1=hardened steel 45-60 HRC.
 
-  const data = await modelJson(env, {
+Use inches internally: convert metric diameter, LOC, pitch, feed per tooth, and feed per rev into inches. Prefer manufacturer-published cutting data. Only include cutting groups the manufacturer actually publishes or clearly intends — do not interpolate or invent ranges for groups they don't rate the tool for. If you can identify the tool but not published cutting data, set found=true with an empty "cutting" array. If you cannot identify the tool at all, set found=false and leave the tool fields empty or null rather than filling in placeholder numbers.`;
+
+  const text = await modelJson(env, {
     prompt,
     useWebSearch: true,
   });
-  return json(parseJsonOutput(data));
+  return json(parseJsonOutput(text));
 }
 
 async function curveDigitize(request, env) {
   const { filename, mimeType, fileData } = await request.json();
   if (!filename || !fileData) return json({ error: "filename and fileData are required" }, 400);
-  const prompt = `Digitize this machine spindle power or torque curve.
+  const prompt = `This file contains a machine tool spindle power and/or torque curve (power or torque vs spindle RPM), likely from a machine manual or spec sheet (Haas, Tormach, DMG, etc.).
 
-If multiple curves are shown, use the continuous/S1/100% duty curve. Convert to horsepower if the chart is kW, ft-lb, or Nm using:
+Digitize the curve. If multiple duty ratings are shown (S1/continuous vs S3/S6/intermittent, or 100% vs 30-minute), use the CONTINUOUS (S1 / 100% duty) curve — the conservative one. If only power OR only torque is shown, convert to horsepower:
 HP = kW * 1.341
 HP = torque_ftlb * RPM / 5252
 HP = torque_Nm * RPM / 7121
 
-Return ONLY a raw JSON object:
+Respond with ONLY a raw JSON object, no markdown fences, no preamble:
 {
  "found": true|false,
- "points": [ { "rpm": number, "hp": number } ],
+ "points": [ { "rpm": number, "hp": number } ] (12 to 24 points spanning the full RPM range, denser where the curve bends — include the corner/base speed where power peaks),
  "peak_hp": number,
  "max_rpm": number,
- "notes": string
+ "notes": string (1 sentence: which curve you read, any assumptions)
 }
+If no recognizable power/torque curve exists in the file, set found=false with empty points.`;
 
-Use 12 to 24 points spanning the curve, denser near bends and base speed.`;
-
-  const data = await modelJson(env, {
+  const text = await modelJson(env, {
     prompt,
     file: { filename, mimeType, fileData },
   });
-  return json(parseJsonOutput(data));
+  return json(parseJsonOutput(text));
 }
 
+async function machineCurves(request, env) {
+  const { machine, maxRpm, notes } = await request.json();
+  if (!machine) return json({ error: "machine is required" }, 400);
+  const prompt = `Search the web for manufacturer-published spindle power and torque curve data for the machine tool "${machine}"${Number.isFinite(maxRpm) ? ` (max spindle speed about ${maxRpm} RPM)` : ""}${notes ? ` (owner's notes: ${notes})` : ""}.
+
+Machine tool builders (Haas, Tormach, DMG Mori, Mazak, Okuma, Doosan/DN Solutions, Brother, Fadal, Hurco, etc.) publish spindle power/torque vs RPM charts in operator manuals, spec sheets, and brochures. Find the chart(s) for this exact machine and spindle option and digitize them.
+
+Machines often have MULTIPLE curves — return each one as a separate entry:
+- Duty ratings: S1 / continuous / 100%-duty vs S6 / S3 / 30-minute / 5-minute / peak ratings. Return the continuous curve AND the intermittent one when both are published, marked with "duty".
+- Belt or gear ranges (e.g. Tormach low belt vs high belt, gearbox low/high): one curve per range, named for the range, with that range's own max RPM.
+- Multiple spindles (e.g. a lathe's main spindle vs its live/driven tooling): one curve per spindle, named for the spindle.
+
+Convert everything to horsepower:
+HP = kW * 1.341
+HP = torque_ftlb * RPM / 5252
+HP = torque_Nm * RPM / 7121
+
+Respond with ONLY a raw JSON object, no markdown fences, no preamble:
+{
+ "found": true|false,
+ "machine": string (the exact machine / spindle configuration you matched),
+ "curves": [
+   { "label": string (short name, e.g. "S1 continuous", "30-min rating", "Low belt", "High belt", "Main spindle", "Live tooling"),
+     "duty": "continuous"|"burst" (burst = any intermittent/peak rating: S6, S3, 30-minute, 5-minute…),
+     "max_rpm": number|null (top RPM of THIS configuration if it differs from the machine's overall max — e.g. a low belt range — else null),
+     "points": [ { "rpm": number, "hp": number } ] (8 to 24 points spanning this curve's RPM range, denser where it bends — include the corner/base speed where power peaks),
+     "notes": string (1 sentence: which chart/line this came from) }
+ ],
+ "sources": [array of source URLs],
+ "notes": string (1-2 sentences: what you found, caveats, which spindle option you assumed)
+}
+
+Ground every curve in published data: an actual curve chart, or published torque/power figures at stated RPMs (e.g. "75 ft-lb at 1400 RPM, 30 HP peak, 8100 RPM max"). If you can only find a few published anchor points, return just those points and say so in the curve's notes rather than inventing a smooth curve. Do NOT fabricate numbers for a machine you cannot find data for — set found=false with an empty curves array instead. If the machine was sold with multiple factory spindle options (e.g. 8100 vs 12000 RPM, standard vs high-torque), pick the option matching the stated max RPM and note the assumption; if none matches, return the standard option.`;
+
+  const text = await modelJson(env, {
+    prompt,
+    useWebSearch: true,
+    maxTokens: 4000,
+  });
+  return json(parseJsonOutput(text));
+}
+
+/* ---------------- model transport ----------------
+   Both providers are called with streaming enabled: web-search lookups can run
+   90s+, and buffered (non-streaming) responses were getting killed by proxy
+   timeouts (Cloudflare 524) whose plain-text error pages then crashed
+   response.json(). Streaming keeps bytes flowing; retries cover the rest. */
+
 async function modelJson(env, request) {
-  if (env.OPENAI_API_KEY) return openaiResponse(env, request);
-  if (env.ANTHROPIC_API_KEY) return anthropicResponse(env, request);
+  if (env.OPENAI_API_KEY) return withRetry(() => openaiResponse(env, request));
+  if (env.ANTHROPIC_API_KEY) return withRetry(() => anthropicResponse(env, request));
   throw new Error("Set OPENAI_API_KEY or ANTHROPIC_API_KEY as a Worker secret");
+}
+
+const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529]);
+
+async function withRetry(doCall, tries = 3) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await doCall();
+    } catch (err) {
+      lastErr = err;
+      // TypeError = fetch network failure / stream cut mid-flight — retryable too
+      if (!(err.retryable || err instanceof TypeError) || i === tries - 1) throw err;
+      await new Promise((r) => setTimeout(r, 1200 * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
+function upstreamError(provider, status, bodyText) {
+  let detail = String(bodyText || "").slice(0, 200).trim();
+  try {
+    const parsed = JSON.parse(bodyText);
+    detail = parsed.error?.message || detail;
+  } catch { /* plain-text error page (e.g. "error code: 524") — use the snippet */ }
+  const err = new Error(`${provider} request failed (${status}${detail ? ": " + detail : ""})`);
+  err.retryable = RETRYABLE_STATUS.has(status);
+  return err;
+}
+
+async function readSse(response, onEvent) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) >= 0) {
+      const chunk = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      for (const line of chunk.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        let obj;
+        try { obj = JSON.parse(payload); } catch { continue; }
+        onEvent(obj);
+      }
+    }
+  }
 }
 
 async function openaiResponse(env, request) {
@@ -109,8 +208,9 @@ async function openaiResponse(env, request) {
 
   const body = {
     model: env.OPENAI_MODEL || "gpt-5.6",
-    max_output_tokens: 1600,
+    max_output_tokens: request.maxTokens || 1600,
     input: [{ role: "user", content }],
+    stream: true,
   };
   if (request.useWebSearch) {
     body.tools = [{ type: "web_search" }];
@@ -125,9 +225,26 @@ async function openaiResponse(env, request) {
     },
     body: JSON.stringify(body),
   });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error?.message || `OpenAI request failed (${response.status})`);
-  return data;
+  if (!response.ok) throw upstreamError("OpenAI", response.status, await response.text());
+
+  let text = "";
+  let failure = null;
+  await readSse(response, (ev) => {
+    if (ev.type === "response.output_text.delta" && typeof ev.delta === "string") text += ev.delta;
+    else if (ev.type === "response.failed") failure = ev.response?.error?.message || "response.failed";
+    else if (ev.type === "error") failure = ev.message || ev.error?.message || "stream error";
+  });
+  if (failure) {
+    const err = new Error(`OpenAI stream failed (${failure})`);
+    err.retryable = true;
+    throw err;
+  }
+  if (!text.trim()) {
+    const err = new Error("OpenAI returned no text");
+    err.retryable = true;
+    throw err;
+  }
+  return text;
 }
 
 async function anthropicResponse(env, request) {
@@ -144,8 +261,9 @@ async function anthropicResponse(env, request) {
 
   const body = {
     model: env.ANTHROPIC_MODEL || "claude-opus-4-8",
-    max_tokens: 1600,
+    max_tokens: request.maxTokens || 1600,
     messages: [{ role: "user", content }],
+    stream: true,
   };
   if (request.useWebSearch) {
     body.tools = [{ type: "web_search_20260209", name: "web_search" }];
@@ -160,33 +278,33 @@ async function anthropicResponse(env, request) {
     },
     body: JSON.stringify(body),
   });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error?.message || `Anthropic request failed (${response.status})`);
-  return data;
+  if (!response.ok) throw upstreamError("Anthropic", response.status, await response.text());
+
+  let text = "";
+  let failure = null;
+  await readSse(response, (ev) => {
+    if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") text += ev.delta.text;
+    else if (ev.type === "error") failure = ev.error?.message || "stream error";
+  });
+  if (failure) {
+    const err = new Error(`Anthropic stream failed (${failure})`);
+    err.retryable = true;
+    throw err;
+  }
+  if (!text.trim()) {
+    const err = new Error("Anthropic returned no text");
+    err.retryable = true;
+    throw err;
+  }
+  return text;
 }
 
-function parseJsonOutput(data) {
-  const text = data.output_text || flattenOutputText(data.output) || flattenAnthropicText(data.content);
+function parseJsonOutput(text) {
   const clean = String(text || "").replace(/```json|```/g, "").trim();
   const start = clean.indexOf("{");
   const end = clean.lastIndexOf("}");
   if (start < 0 || end < start) throw new Error("Model did not return JSON");
   return JSON.parse(clean.slice(start, end + 1));
-}
-
-function flattenOutputText(output) {
-  return (output || [])
-    .flatMap((item) => item.content || [])
-    .filter((part) => part.type === "output_text" || part.type === "text")
-    .map((part) => part.text)
-    .join("\n");
-}
-
-function flattenAnthropicText(content) {
-  return (content || [])
-    .filter((part) => part.type === "text")
-    .map((part) => part.text)
-    .join("\n");
 }
 
 function json(data, status = 200) {

@@ -34,6 +34,52 @@ const TOOL_TYPES = { square_endmill: "Square end mill", ball_endmill: "Ball end 
 const ISO_COLORS = { P: "#1B5FAA", M: "#D9A400", K: "#C0392B", N: "#1E8F4E", S: "#C96A1E", H: "#6E7B8A" };
 const groupColor = (g) => ISO_COLORS[g?.[0]] || "#6B7280";
 
+/* ---------------- icons ----------------
+   Tool-type glyphs are Material Design Icons paths (Pictogrammers, Apache-2.0),
+   pulled via Iconify and embedded so the app stays self-contained offline. */
+const TYPE_ICON_PATHS = {
+  square_endmill: "m14.5 7.3l-1 .7V7h-3v3l-1 .7v1l5-3.3zm0 4l-1 .7v-2l-3 2v2l-1 .7v1l5-3.3zm0 4l-1 .7v-2l-3 2v2l-1 .7v1l5-3.3zM8 3S7 3 7 4l3 2h4l3-2s0-1-1-1zm5.5 15v3h-3v-1z",
+  ball_endmill: "m14.5 7.3l-1 .7V7h-3v3l-1 .7v1l5-3.3zm0 4l-1 .7v-2l-3 2v2l-1 .7v1l5-3.3zm0 4l-1 .7v-2l-3 2v2l-1 .7v1l5-3.3zM7 6h10s-1-3-5-3s-5 3-5 3m6.5 12v3h-3v-1z",
+  chamfer_mill: "M13.5 17v2L12 22l-1.5-3zm1-10.7l-1 .7V6h-3v3l-1 .7v1l5-3.3zm0 4l-1 .7V9l-3 2v2l-1 .7v1l5-3.3zm0 4l-1 .7v-2l-3 2v2l-1 .7v1l5-3.3zM8 2S7 2 7 3l3 2h4l3-2s0-1-1-1z",
+  drill: "M13.5 17v2L12 22l-1.5-3zm1-10.7l-1 .7V6h-3v3l-1 .7v1l5-3.3zm0 4l-1 .7V9l-3 2v2l-1 .7v1l5-3.3zm0 4l-1 .7v-2l-3 2v2l-1 .7v1l5-3.3zM7 5h10s-1-3-5-3s-5 3-5 3",
+  tap: "m10 19.3l4-2.7V20l-2 2l-2-2zm4-6.6l-4 2.7v2L9 18v1l6-3.9V14l-1 .7zM7 2v3h10V2zm2 4v3l1 .7v3.7L9 14v1l6-3.9V10l-1 .7v-1l1-.7V6z",
+};
+function TypeIcon({ type, size = 15 }) {
+  const d = TYPE_ICON_PATHS[type];
+  if (!d) return null;
+  return <svg className="ticon" width={size} height={size} viewBox="0 0 24 24" aria-hidden="true"><path d={d} fill="currentColor" /></svg>;
+}
+
+/* brand marks: favicons fetched at render time; unknown brands / failed loads show nothing */
+const BRAND_DOMAINS = {
+  haas: "haascnc.com", tormach: "tormach.com", kennametal: "kennametal.com", widia: "widia.com",
+  harvey: "harveytool.com", helical: "helicaltool.com", osg: "osgtool.com", guhring: "guhring.com",
+  "gühring": "guhring.com", sandvik: "sandvik.coromant.com", coromant: "sandvik.coromant.com",
+  iscar: "iscar.com", seco: "secotools.com", "walter": "walter-tools.com", mitsubishi: "mmc-carbide.com",
+  kyocera: "kyocera-sgstool.com", sgs: "kyocera-sgstool.com", "yg-1": "yg1.kr", yg1: "yg1.kr",
+  niagara: "niagaracutter.com", emuge: "emuge.com", garr: "garrtool.com", "ma ford": "maford.com",
+  "m.a. ford": "maford.com", "micro 100": "micro100.com", micro100: "micro100.com",
+  lakeshore: "lakeshorecarbide.com", maritool: "maritool.com", destiny: "destinytool.com",
+  imco: "imcousa.com", amana: "amanatool.com", mazak: "mazakusa.com", okuma: "okuma.com",
+  dmg: "dmgmori.com", doosan: "doosanmachinetools.com", "dn solutions": "dn-solutions.com",
+  fanuc: "fanucamerica.com", hurco: "hurco.com", fadal: "fadal.com", syil: "syil.com",
+};
+function brandDomain(name) {
+  const n = (name || "").toLowerCase();
+  let best = null;
+  for (const [k, d] of Object.entries(BRAND_DOMAINS)) {
+    if (n.includes(k) && (!best || k.length > best[0].length)) best = [k, d];
+  }
+  return best ? best[1] : null;
+}
+function BrandIcon({ name, size = 16 }) {
+  const domain = brandDomain(name);
+  const [broken, setBroken] = useState(false);
+  useEffect(() => { setBroken(false); }, [domain]);
+  if (!domain || broken) return null;
+  return <img className="bicon" width={size} height={size} loading="lazy" alt="" src={`https://www.google.com/s2/favicons?domain=${domain}&sz=32`} onError={() => setBroken(true)} />;
+}
+
 const FINISH_FZ_FACTOR = 0.6; // finishing chipload vs roughing
 const FINISH_SFM_FACTOR = 1.1; // slightly higher speed for finish is fine
 
@@ -74,12 +120,14 @@ const toolLabel = (t, metric) => {
 const hasMfgData = (t) => Object.keys(t.cutting || {}).length > 0;
 const canCut = (t, grp) => !hasMfgData(t) || !!t.cutting[grp];
 
-/* ---------------- spindle power curves ---------------- */
-function availableHp(machine, rpm) {
-  if (!machine) return null;
-  const c = machine.curve;
-  if (!c || c.length < 2) return Number.isFinite(machine.hp) ? machine.hp : null;
-  const pts = [...c].sort((a, b) => a.rpm - b.rpm);
+/* ---------------- spindle power curves ----------------
+   A machine carries an array of curves. duty "continuous" curves are the
+   selectable configurations (belts, gear ranges, separate spindles); duty
+   "burst" curves are intermittent ratings (S6 / 30-min / peak) layered on top.
+   A burst curve applies to the continuous curve named by forId, or to any
+   configuration when forId is empty. */
+function interpHp(points, rpm) {
+  const pts = [...points].sort((a, b) => a.rpm - b.rpm);
   if (rpm <= pts[0].rpm) return pts[0].hp;
   if (rpm >= pts[pts.length - 1].rpm) return pts[pts.length - 1].hp;
   for (let i = 1; i < pts.length; i++) {
@@ -89,6 +137,42 @@ function availableHp(machine, rpm) {
     }
   }
   return pts[pts.length - 1].hp;
+}
+const contCurves = (m) => (m?.curves || []).filter((c) => c.duty !== "burst");
+const burstCurvesOf = (m) => (m?.curves || []).filter((c) => c.duty === "burst");
+function pickCont(m, curveId) {
+  const cs = contCurves(m);
+  return cs.find((c) => c.id === curveId) || cs[0] || null;
+}
+function pickBurst(m, contId) {
+  const bs = burstCurvesOf(m);
+  return bs.find((c) => c.forId && c.forId === contId) || bs.find((c) => !c.forId) || null;
+}
+function availableHp(machine, rpm, curveId) {
+  if (!machine) return null;
+  const c = pickCont(machine, curveId);
+  if (!c || (c.points?.length || 0) < 2) return Number.isFinite(machine.hp) ? machine.hp : null;
+  return interpHp(c.points, rpm);
+}
+function availableBurstHp(machine, rpm, curveId) {
+  const b = pickBurst(machine, pickCont(machine, curveId)?.id);
+  return b && b.points?.length > 1 ? interpHp(b.points, rpm) : null;
+}
+/* a config (low belt, live tooling…) can top out below the machine's overall max RPM */
+function machineMaxRpm(machine, curveId) {
+  if (!machine) return null;
+  const c = pickCont(machine, curveId);
+  if (c && Number.isFinite(c.maxRpm) && c.maxRpm > 0) return Math.min(c.maxRpm, machine.maxRpm || c.maxRpm);
+  return machine.maxRpm;
+}
+let curveSeq = 0;
+const curveUid = () => "c" + Date.now().toString(36) + (curveSeq++).toString(36);
+/* pre-curves-array machines carried a single machine.curve */
+function migrateMachine(m) {
+  if (!m || Array.isArray(m.curves)) return m;
+  const { curve, curveSrc, ...rest } = m;
+  const curves = curve?.length > 1 ? [{ id: curveUid(), label: "Spindle", duty: "continuous", maxRpm: null, points: curve, srcName: curveSrc || "" }] : [];
+  return { ...rest, curves };
 }
 function parseCurvePairs(text) {
   const pts = [];
@@ -142,6 +226,11 @@ async function digitizeCurve(file) {
     r.readAsDataURL(file);
   });
   return apiPost("/api/curve-digitize", { filename: file.name, mimeType: file.type || "application/octet-stream", fileData: b64 });
+}
+
+/* ---------------- AI machine-curve web search ---------------- */
+async function findMachineCurves(machine) {
+  return apiPost("/api/machine-curves", { machine: machine.name, maxRpm: machine.maxRpm, notes: machine.notes || "" });
 }
 
 /* ---------------- Fusion .tools import (a .tools file is a zip with JSON inside) ---------------- */
@@ -208,7 +297,7 @@ function mapFusionTool(ft) {
 /* ============================================================
    MATH CORE
    ============================================================ */
-function computeCut({ tool, machine, group, op, mode, sfm, ae, ap, targetChip, fz, ipr, stickout }) {
+function computeCut({ tool, machine, curveId, group, op, mode, sfm, ae, ap, targetChip, fz, ipr }) {
   const g = GROUPS[group];
   if (!tool || !g) return null;
   const D = tool.dia;
@@ -233,10 +322,13 @@ function computeCut({ tool, machine, group, op, mode, sfm, ae, ap, targetChip, f
   let rpm = rpmRaw;
   out.rpmRaw = rpmRaw;
   out.clamped = false;
-  if (machine?.maxRpm && rpmRaw > machine.maxRpm) {
-    rpm = machine.maxRpm;
+  const maxR = machineMaxRpm(machine, curveId);
+  if (maxR && rpmRaw > maxR) {
+    rpm = maxR;
     out.clamped = true;
-    out.warnings.push({ level: "amber", msg: `Wants ${fmt(rpmRaw, 0)} RPM — clamped to ${machine.name} max ${fmt(machine.maxRpm, 0)}. Effective ${fmt((rpm * Math.PI * Deff) / 12, 0)} SFM.` });
+    const cfg = pickCont(machine, curveId);
+    const cfgNote = cfg && Number.isFinite(cfg.maxRpm) && cfg.maxRpm > 0 && cfg.maxRpm < (machine.maxRpm || Infinity) ? ` (${cfg.label})` : "";
+    out.warnings.push({ level: "amber", msg: `Wants ${fmt(rpmRaw, 0)} RPM — clamped to ${machine.name}${cfgNote} max ${fmt(maxR, 0)}. Effective ${fmt((rpm * Math.PI * Deff) / 12, 0)} SFM.` });
   }
   out.rpm = rpm;
   out.sfmActual = (rpm * Math.PI * Deff) / 12;
@@ -252,7 +344,7 @@ function computeCut({ tool, machine, group, op, mode, sfm, ae, ap, targetChip, f
       out.fzProg = pitch;
       out.info.push(`Rigid tapping: feed is locked to pitch (${fmt(pitch, 4)}"/rev = ${fmt(pitch * IN_MM, 2)} mm/rev). Program G84 and let the control sync — RPM is your only free variable.`);
     }
-    powerCheck(out, machine, rpm);
+    powerCheck(out, machine, rpm, curveId);
     return out;
   }
 
@@ -264,7 +356,7 @@ function computeCut({ tool, machine, group, op, mode, sfm, ae, ap, targetChip, f
     out.chipActual = iprUse / 2; // per lip, 2-flute assumption
     out.hp = out.mrr / g.uhp;
     out.torque = out.hp > 0 && rpm > 0 ? (out.hp * 5252) / rpm : 0;
-    powerCheck(out, machine, rpm);
+    powerCheck(out, machine, rpm, curveId);
     return out;
   }
 
@@ -278,7 +370,7 @@ function computeCut({ tool, machine, group, op, mode, sfm, ae, ap, targetChip, f
     out.mrr = 0.5 * ap * leg * out.feed; // triangular chamfer cross-section
     out.hp = out.mrr / g.uhp;
     out.torque = out.hp > 0 && rpm > 0 ? (out.hp * 5252) / rpm : 0;
-    powerCheck(out, machine, rpm);
+    powerCheck(out, machine, rpm, curveId);
     return out;
   }
 
@@ -319,31 +411,30 @@ function computeCut({ tool, machine, group, op, mode, sfm, ae, ap, targetChip, f
   if (op === "side" && ae > D * 0.55) out.warnings.push({ level: "amber", msg: `Radial engagement > 0.5×Ø in conventional side milling — heavy cut, watch deflection.` });
   if (mode === "finish" && ae > 0.025) out.info.push(`Finishing tip: typical stock-to-leave for this material is ${fmt(g.stock[0], 3)}"–${fmt(g.stock[1], 3)}" radial. Spring passes recommended on toleranced walls.`);
 
-  // deflection / chatter risk — heuristic cantilever model, not a stability-lobe guarantee
-  if (out.hp > 0 && out.sfmActual > 0) {
-    const L = Number.isFinite(stickout) && stickout > 0 ? stickout : D * 3;
-    const assumedL = !(Number.isFinite(stickout) && stickout > 0);
-    const ld = L / D;
-    const Ft = (33000 * out.hp) / out.sfmActual; // tangential force, lbf
-    const I = (Math.PI * Math.pow(D * 0.8, 4)) / 64; // fluted core ≈ 0.8×Ø
-    const delta = (Ft * Math.pow(L, 3)) / (3 * 87e6 * I); // carbide E ≈ 87 Mpsi
-    const level = delta > 0.0012 || ld > 6 ? "high" : delta > 0.0004 || ld > 4.5 ? "elevated" : "low";
-    out.chatter = { delta, ld, level, L, assumedL, Ft };
-  }
-
-  powerCheck(out, machine, rpm);
+  powerCheck(out, machine, rpm, curveId);
   return out;
 }
 
-function powerCheck(out, machine, rpm) {
-  const avail = availableHp(machine, rpm);
+function powerCheck(out, machine, rpm, curveId) {
+  const avail = availableHp(machine, rpm, curveId);
   if (avail == null) return;
+  const cont = pickCont(machine, curveId);
   out.hpAvail = avail;
-  out.hpSrc = machine.curve?.length > 1 ? "curve" : "flat";
+  out.hpSrc = cont && cont.points?.length > 1 ? "curve" : "flat";
+  out.curveLabel = out.hpSrc === "curve" ? cont.label || "" : "";
+  const burst = availableBurstHp(machine, rpm, curveId);
+  if (burst != null) out.hpBurst = burst;
   out.hpPct = avail > 0 ? out.hp / avail : Infinity;
   if (out.hp <= 0) return;
-  if (out.hpPct > 1) out.warnings.push({ level: "red", msg: `Needs ${fmt(out.hp, 1)} HP at the tool — only ${fmt(avail, 1)} HP available at ${fmt(rpm, 0)} RPM${out.hpSrc === "flat" ? ` (${machine.name} flat rating)` : ` on ${machine.name}'s curve`}. Reduce DOC/WOC or feed.` });
-  else if (out.hpPct > 0.8) out.warnings.push({ level: "amber", msg: `${fmt(out.hpPct * 100, 0)}% of available spindle power at this RPM — near the limit.` });
+  if (out.hpPct > 1) {
+    if (burst != null && out.hp <= burst) {
+      out.warnings.push({ level: "amber", msg: `Needs ${fmt(out.hp, 1)} HP — over ${machine.name}'s continuous rating (${fmt(avail, 1)} HP at ${fmt(rpm, 0)} RPM) but inside the burst rating (${fmt(burst, 1)} HP). Fine for short engagements; back it off for sustained roughing or the spindle will derate.` });
+    } else {
+      out.warnings.push({ level: "red", msg: `Needs ${fmt(out.hp, 1)} HP at the tool — only ${fmt(avail, 1)} HP available at ${fmt(rpm, 0)} RPM${out.hpSrc === "flat" ? ` (${machine.name} flat rating)` : ` on ${machine.name}'s ${out.curveLabel || "spindle"} curve`}${burst != null ? `; even the burst rating (${fmt(burst, 1)} HP) is exceeded` : ""}. Reduce DOC/WOC or feed.` });
+    }
+  } else if (out.hpPct > 0.8) {
+    out.warnings.push({ level: "amber", msg: `${fmt(out.hpPct * 100, 0)}% of available spindle power at this RPM — near the limit.` });
+  }
 }
 
 /* seed sfm / fz for a tool+group+mode from library data or generic tables */
@@ -423,7 +514,7 @@ export default function App() {
   useEffect(() => {
     (async () => {
       const d = await loadAll();
-      if (d) { setMachines(d.machines || []); setTools(d.tools || []); setMetric(!!d.metric); }
+      if (d) { setMachines((d.machines || []).map(migrateMachine)); setTools(d.tools || []); setMetric(!!d.metric); }
       setLoaded(true);
     })();
   }, []);
@@ -453,7 +544,7 @@ export default function App() {
       let addM = 0, addT = 0;
       setMachines((prev) => {
         const have = new Set(prev.map((m) => m.name.toLowerCase()));
-        const fresh = inM.filter((m) => m?.name && !have.has(m.name.toLowerCase()));
+        const fresh = inM.filter((m) => m?.name && !have.has(m.name.toLowerCase())).map(migrateMachine);
         addM = fresh.length;
         return [...prev, ...fresh];
       });
@@ -499,7 +590,7 @@ export default function App() {
         <main>
           {tab === "machines" && <Machines machines={machines} setMachines={setMachines} />}
           {tab === "tools" && <Tools tools={tools} setTools={setTools} metric={metric} />}
-          {tab === "calc" && <Calculator machines={machines} tools={tools} metric={metric} goTo={setTab} />}
+          {tab === "calc" && <Calculator machines={machines} tools={tools} setTools={setTools} metric={metric} goTo={setTab} />}
         </main>
       )}
     </div>
@@ -510,35 +601,46 @@ export default function App() {
    MACHINES TAB
    ============================================================ */
 function Machines({ machines, setMachines }) {
-  const blank = { name: "", maxRpm: "", hp: "", notes: "" };
+  const blank = { name: "", maxRpm: "", hp: "", notes: "", curves: [] };
   const [draft, setDraft] = useState(blank);
   const [editId, setEditId] = useState(null);
-  const [curveFor, setCurveFor] = useState(null); // machine id receiving a curve
+  const [curveFor, setCurveFor] = useState(null); // "draft" or a machine id receiving the next uploaded curve
   const [curveBusy, setCurveBusy] = useState(false);
   const [curveErr, setCurveErr] = useState("");
-  const [curveDraft, setCurveDraft] = useState(null); // {machineId, srcName, notes, raw?:pairs, unit?, points}
+  const [curveDraft, setCurveDraft] = useState(null); // review state: {target, srcName, notes, raw?:pairs, unit?, points?, label, duty, maxRpm}
+  const [aiBusy, setAiBusy] = useState(null); // "draft" or machine id being searched
+  const [aiDraft, setAiDraft] = useState(null); // review state: {target, targetName, machine, curves:[{checked,...}], sources, notes}
   const curveFileRef = useRef(null);
+
+  const targetName = (t) => (t === "draft" ? (draft.name.trim() || "new machine") : machines.find((m) => m.id === t)?.name || "machine");
+  const targetCurves = (t) => (t === "draft" ? draft.curves : machines.find((m) => m.id === t)?.curves || []);
+  const appendCurves = (t, add) => {
+    if (t === "draft") setDraft((p) => ({ ...p, curves: [...p.curves, ...add] }));
+    else setMachines((prev) => prev.map((m) => (m.id === t ? { ...m, curves: [...(m.curves || []), ...add] } : m)));
+  };
 
   const commit = () => {
     if (!draft.name.trim() || !parseFloat(draft.maxRpm)) return;
-    const m = { id: editId || String(Date.now()), name: draft.name.trim(), maxRpm: parseFloat(draft.maxRpm), hp: parseFloat(draft.hp) || null, notes: draft.notes.trim() };
+    const m = { id: editId || String(Date.now()), name: draft.name.trim(), maxRpm: parseFloat(draft.maxRpm), hp: parseFloat(draft.hp) || null, notes: draft.notes.trim(), curves: draft.curves };
     setMachines((prev) => editId ? prev.map((x) => (x.id === editId ? { ...x, ...m } : x)) : [...prev, m]);
     setDraft(blank); setEditId(null);
   };
+  const startEdit = (m) => { setDraft({ name: m.name, maxRpm: m.maxRpm, hp: m.hp ?? "", notes: m.notes || "", curves: m.curves || [] }); setEditId(m.id); window.scrollTo({ top: 0, behavior: "smooth" }); };
 
-  const pickCurve = (id) => { setCurveFor(id); setCurveErr(""); curveFileRef.current?.click(); };
+  const pickCurve = (target) => { setCurveFor(target); setCurveErr(""); curveFileRef.current?.click(); };
 
   const onCurveFile = async (e) => {
     const file = e.target.files?.[0];
     e.target.value = "";
-    const machineId = curveFor;
-    if (!file || !machineId) return;
+    const target = curveFor;
+    if (!file || !target) return;
     setCurveErr(""); setCurveDraft(null);
+    const defaults = { target, label: targetCurves(target).length ? "" : "S1 continuous", duty: "continuous", maxRpm: "" };
     const isCsv = /\.(csv|txt|tsv)$/i.test(file.name) || (file.type || "").includes("csv") || (file.type || "").includes("text");
     if (isCsv) {
       const raw = parseCurvePairs(await file.text());
       if (raw.length < 2) { setCurveErr("Couldn't find RPM + value pairs in that file. Expected rows like: 2000, 22.5"); return; }
-      setCurveDraft({ machineId, srcName: file.name, raw, unit: "hp", notes: `${raw.length} rows parsed — first column read as RPM.` });
+      setCurveDraft({ ...defaults, srcName: file.name, raw, unit: "hp", notes: `${raw.length} rows parsed — first column read as RPM.` });
     } else {
       setCurveBusy(true);
       try {
@@ -547,7 +649,7 @@ function Machines({ machines, setMachines }) {
           setCurveErr("Couldn't find a power/torque curve in that file. " + (res.notes || ""));
         } else {
           const points = res.points.filter((p) => Number.isFinite(p.rpm) && Number.isFinite(p.hp)).sort((a, b) => a.rpm - b.rpm);
-          setCurveDraft({ machineId, srcName: file.name, points, notes: res.notes || "" });
+          setCurveDraft({ ...defaults, srcName: file.name, points, notes: res.notes || "" });
         }
       } catch (err) { setCurveErr("Digitization failed (" + (err.message || "error") + "). A cropped screenshot of just the chart usually works best."); }
       setCurveBusy(false);
@@ -560,36 +662,113 @@ function Machines({ machines, setMachines }) {
 
   const saveCurve = () => {
     if (!draftPoints || draftPoints.length < 2) return;
-    setMachines((prev) => prev.map((m) => (m.id === curveDraft.machineId ? { ...m, curve: draftPoints, curveSrc: curveDraft.srcName } : m)));
+    const maxRpm = parseFloat(curveDraft.maxRpm);
+    appendCurves(curveDraft.target, [{
+      id: curveUid(),
+      label: curveDraft.label.trim() || curveDraft.srcName,
+      duty: curveDraft.duty,
+      maxRpm: Number.isFinite(maxRpm) && maxRpm > 0 ? maxRpm : null,
+      points: draftPoints,
+      srcName: curveDraft.srcName,
+    }]);
     setCurveDraft(null); setCurveFor(null);
   };
-  const removeCurve = (id) => setMachines((prev) => prev.map((m) => (m.id === id ? { ...m, curve: null, curveSrc: null } : m)));
 
-  const curveMachine = curveDraft ? machines.find((m) => m.id === curveDraft.machineId) : null;
-  const peak = draftPoints ? draftPoints.reduce((a, p) => (p.hp > a.hp ? p : a), draftPoints[0]) : null;
+  const aiFind = async (target) => {
+    const m = target === "draft"
+      ? { name: draft.name.trim(), maxRpm: parseFloat(draft.maxRpm) || null, notes: draft.notes }
+      : machines.find((x) => x.id === target);
+    if (!m?.name) return;
+    setCurveErr(""); setAiDraft(null); setAiBusy(target);
+    try {
+      const res = await findMachineCurves(m);
+      const curves = (res.curves || [])
+        .map((c) => ({
+          checked: true,
+          label: c.label || "Curve",
+          duty: c.duty === "burst" ? "burst" : "continuous",
+          maxRpm: Number.isFinite(c.max_rpm) && c.max_rpm > 0 ? c.max_rpm : null,
+          points: (c.points || []).filter((p) => Number.isFinite(p.rpm) && Number.isFinite(p.hp)).sort((a, b) => a.rpm - b.rpm),
+          notes: c.notes || "",
+        }))
+        .filter((c) => c.points.length >= 2);
+      if (!res.found || !curves.length) {
+        setCurveErr(`Couldn't find published curve data for "${m.name}" on the web. ${res.notes || ""} A screenshot of the chart from the manual still works — hit Upload curve.`);
+      } else {
+        setAiDraft({ target, targetName: m.name, machine: res.machine || m.name, curves, sources: res.sources || [], notes: res.notes || "" });
+      }
+    } catch (err) {
+      setCurveErr("Curve search failed (" + (err.message || "error") + "). Try again in a minute.");
+    }
+    setAiBusy(null);
+  };
+
+  const saveAiCurves = () => {
+    const add = aiDraft.curves.filter((c) => c.checked).map((c) => ({
+      id: curveUid(), label: c.label.trim() || "Curve", duty: c.duty, maxRpm: c.maxRpm, points: c.points, srcName: "AI web search",
+    }));
+    if (add.length) appendCurves(aiDraft.target, add);
+    setAiDraft(null);
+  };
+  const setAiCurve = (i, patch) => setAiDraft((p) => ({ ...p, curves: p.curves.map((c, j) => (j === i ? { ...c, ...patch } : c)) }));
+
+  const setDraftCurve = (id, patch) => setDraft((p) => ({ ...p, curves: p.curves.map((c) => (c.id === id ? { ...c, ...patch } : c)) }));
+  const dropDraftCurve = (id) => setDraft((p) => ({ ...p, curves: p.curves.filter((c) => c.id !== id) }));
+  const draftCont = draft.curves.filter((c) => c.duty !== "burst");
+
+  const busy = curveBusy || !!aiBusy;
 
   return (
     <section className="panel">
       <h2>Machines</h2>
-      <p className="hint">Max spindle RPM clamps everything. Import a power/torque curve (manual PDF, a screenshot of the chart, or a CSV of RPM,value rows) and the calculator will check power at your <em>actual</em> RPM instead of the nameplate number.</p>
+      <p className="hint">Max spindle RPM clamps everything. Give a machine its power/torque curves — upload a manual PDF, a chart screenshot, or a CSV of RPM,value rows, or let AI search the web for the published data. A machine can hold several curves: continuous (S1) vs burst duty ratings, low/high belt ranges, or separate spindles — the calculator checks power on the right one at your <em>actual</em> RPM.</p>
       <div className="grid-form">
         <Field label="Name"><input className="num txt" placeholder="Haas VF-2" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></Field>
         <Field label="Max spindle" unit="RPM"><input className="num" type="number" placeholder="10000" value={draft.maxRpm} onChange={(e) => setDraft({ ...draft, maxRpm: e.target.value })} /></Field>
         <Field label="Rated power (fallback)" unit="HP"><input className="num" type="number" placeholder="30" value={draft.hp} onChange={(e) => setDraft({ ...draft, hp: e.target.value })} /></Field>
         <Field label="Notes"><input className="num txt" placeholder="CAT40, TSC…" value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} /></Field>
       </div>
+
+      {draft.curves.length > 0 && (
+        <div className="curve-list">
+          {draft.curves.map((c) => {
+            const peak = c.points.reduce((a, p) => (p.hp > a.hp ? p : a), c.points[0]);
+            return (
+              <div className="curve-row" key={c.id}>
+                <Spark pts={c.points} w={120} h={30} />
+                <input className="num txt sm-in curve-label" value={c.label} onChange={(e) => setDraftCurve(c.id, { label: e.target.value })} />
+                <select className="num auto" value={c.duty} onChange={(e) => setDraftCurve(c.id, { duty: e.target.value })}>
+                  <option value="continuous">continuous</option>
+                  <option value="burst">burst</option>
+                </select>
+                {c.duty === "burst" && draftCont.length > 1 && (
+                  <select className="num auto" value={c.forId || ""} onChange={(e) => setDraftCurve(c.id, { forId: e.target.value || null })} title="Which configuration this burst rating belongs to">
+                    <option value="">any config</option>
+                    {draftCont.map((cc) => <option key={cc.id} value={cc.id}>{cc.label}</option>)}
+                  </select>
+                )}
+                <span className="dim mono">{c.points.length} pts · peak {fmt(peak.hp, 1)} HP{Number.isFinite(c.maxRpm) && c.maxRpm ? ` · to ${fmt(c.maxRpm, 0)} RPM` : ""}</span>
+                <button className="btn sm danger" onClick={() => dropDraftCurve(c.id)} title="Remove this curve">×</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
       <div className="row-btns">
         <button className="btn primary" onClick={commit}>{editId ? "Save changes" : "Add machine"}</button>
+        <button className="btn" disabled={busy} onClick={() => pickCurve("draft")} title="Attach a power/torque curve to this machine: PDF, chart screenshot, or CSV">Upload curve</button>
+        <button className="btn" disabled={busy || !draft.name.trim()} onClick={() => aiFind("draft")} title="Search the web for this machine's published power/torque curves">{aiBusy === "draft" ? "Searching…" : "Find curves with AI"}</button>
         {editId && <button className="btn" onClick={() => { setDraft(blank); setEditId(null); }}>Cancel</button>}
       </div>
       <input ref={curveFileRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.csv,.txt,.tsv" style={{ display: "none" }} onChange={onCurveFile} />
-      {curveBusy && <div className="notice info">Reading the curve with AI vision — pulling 12–24 points off the continuous-duty line. Usually 15–30 seconds…</div>}
+      {curveBusy && <div className="notice info">Reading the curve with AI vision — pulling 12–24 points off the chart. Usually 15–30 seconds…</div>}
+      {aiBusy && <div className="notice info">Searching the web for <strong>{targetName(aiBusy)}</strong>'s published power/torque curves — manuals, spec sheets, brochures. Usually 1–2 minutes; results land below for review…</div>}
       {curveErr && <div className="notice amber">{curveErr}</div>}
 
       {curveDraft && draftPoints && (
         <div className="card">
-          <h3>Power curve for {curveMachine?.name} — review before saving</h3>
-          <p className="hint">{curveDraft.srcName} · {draftPoints.length} points · peak {fmt(peak.hp, 1)} HP @ {fmt(peak.rpm, 0)} RPM{curveDraft.notes ? " · " + curveDraft.notes : ""}</p>
+          <h3>Power curve for {targetName(curveDraft.target)} — review before saving</h3>
+          <p className="hint">{curveDraft.srcName} · {draftPoints.length} points · peak {fmt(draftPoints.reduce((a, p) => (p.hp > a.hp ? p : a), draftPoints[0]).hp, 1)} HP @ {fmt(draftPoints.reduce((a, p) => (p.hp > a.hp ? p : a), draftPoints[0]).rpm, 0)} RPM{curveDraft.notes ? " · " + curveDraft.notes : ""}</p>
           {curveDraft.raw && (
             <div className="chip-row" style={{ marginBottom: 8 }}>
               <span className="chip-label">2nd column is</span>
@@ -598,10 +777,52 @@ function Machines({ machines, setMachines }) {
               ))}
             </div>
           )}
-          <Spark pts={draftPoints} w={420} h={110} />
+          <div className="grid-form">
+            <Field label="Curve name"><input className="num txt" placeholder="S1 continuous, Low belt, Main spindle…" value={curveDraft.label} onChange={(e) => setCurveDraft((p) => ({ ...p, label: e.target.value }))} /></Field>
+            <Field label="Duty">
+              <select className="num" value={curveDraft.duty} onChange={(e) => setCurveDraft((p) => ({ ...p, duty: e.target.value }))}>
+                <option value="continuous">Continuous (S1 / 100%)</option>
+                <option value="burst">Burst (S6 / 30-min / peak)</option>
+              </select>
+            </Field>
+            <Field label="Config max RPM (optional)" unit="RPM"><input className="num" type="number" placeholder="only if below machine max" value={curveDraft.maxRpm} onChange={(e) => setCurveDraft((p) => ({ ...p, maxRpm: e.target.value }))} /></Field>
+          </div>
+          <Spark pts={draftPoints} w={560} h={130} />
           <div className="row-btns">
             <button className="btn primary" onClick={saveCurve}>Save curve</button>
             <button className="btn" onClick={() => { setCurveDraft(null); setCurveFor(null); }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {aiDraft && (
+        <div className="card">
+          <h3>AI found {aiDraft.curves.length} curve{aiDraft.curves.length > 1 ? "s" : ""} for {aiDraft.targetName} — review before saving</h3>
+          <p className="hint">Matched: {aiDraft.machine}{aiDraft.notes ? " · " + aiDraft.notes : ""} Sanity-check the shapes against the manual — this came from a web search, not your machine.</p>
+          {aiDraft.curves.map((c, i) => {
+            const peak = c.points.reduce((a, p) => (p.hp > a.hp ? p : a), c.points[0]);
+            return (
+              <div className="curve-row ai" key={i}>
+                <input type="checkbox" checked={c.checked} onChange={() => setAiCurve(i, { checked: !c.checked })} />
+                <Spark pts={c.points} w={170} h={44} />
+                <div className="curve-meta">
+                  <div className="curve-meta-top">
+                    <input className="num txt sm-in curve-label" value={c.label} onChange={(e) => setAiCurve(i, { label: e.target.value })} />
+                    <select className="num auto" value={c.duty} onChange={(e) => setAiCurve(i, { duty: e.target.value })}>
+                      <option value="continuous">continuous</option>
+                      <option value="burst">burst</option>
+                    </select>
+                    <span className="dim mono">{c.points.length} pts · peak {fmt(peak.hp, 1)} HP @ {fmt(peak.rpm, 0)}{Number.isFinite(c.maxRpm) && c.maxRpm ? ` · to ${fmt(c.maxRpm, 0)} RPM` : ""}</span>
+                  </div>
+                  {c.notes && <span className="dim">{c.notes}</span>}
+                </div>
+              </div>
+            );
+          })}
+          {aiDraft.sources.length > 0 && <p className="hint dim">Sources: {aiDraft.sources.slice(0, 4).map((s, i) => <a key={i} href={s} target="_blank" rel="noreferrer">[{i + 1}] </a>)}</p>}
+          <div className="row-btns">
+            <button className="btn primary" onClick={saveAiCurves} disabled={!aiDraft.curves.some((c) => c.checked)}>Save selected</button>
+            <button className="btn" onClick={() => setAiDraft(null)}>Cancel</button>
           </div>
         </div>
       )}
@@ -612,16 +833,23 @@ function Machines({ machines, setMachines }) {
           <tbody>
             {machines.map((m) => (
               <tr key={m.id}>
-                <td className="mono strong">{m.name}</td>
+                <td className="mono strong"><BrandIcon name={m.name} />{m.name}</td>
                 <td className="mono">{fmt(m.maxRpm, 0)}</td>
-                <td>{m.curve?.length > 1
-                  ? <div className="curve-cell"><Spark pts={m.curve} w={110} h={30} /><span className="dim">peak {fmt(Math.max(...m.curve.map((p) => p.hp)), 1)} HP</span></div>
+                <td>{(m.curves || []).length > 0
+                  ? <div className="curve-cell">
+                      {m.curves.map((c) => (
+                        <div className="curve-mini" key={c.id}>
+                          <Spark pts={c.points} w={120} h={30} />
+                          <span className="dim">{c.label}{c.duty === "burst" ? " · burst" : ""} · peak {fmt(Math.max(...c.points.map((p) => p.hp)), 1)} HP</span>
+                        </div>
+                      ))}
+                    </div>
                   : <span className="dim">{Number.isFinite(m.hp) && m.hp ? m.hp + " HP flat" : "—"}</span>}</td>
                 <td>{m.notes}</td>
                 <td className="row-actions">
-                  <button className="btn sm" disabled={curveBusy} onClick={() => pickCurve(m.id)} title="Import a power/torque curve: PDF, chart screenshot, or CSV">{m.curve ? "Re-curve" : "Curve"}</button>
-                  {m.curve && <button className="btn sm" onClick={() => removeCurve(m.id)} title="Remove curve, fall back to flat HP rating">No curve</button>}
-                  <button className="btn sm" onClick={() => { setDraft({ name: m.name, maxRpm: m.maxRpm, hp: m.hp ?? "", notes: m.notes || "" }); setEditId(m.id); }}>Edit</button>
+                  <button className="btn sm" disabled={busy} onClick={() => pickCurve(m.id)} title="Add a power/torque curve: PDF, chart screenshot, or CSV">Curve +</button>
+                  <button className="btn sm" disabled={busy} onClick={() => aiFind(m.id)} title="Search the web for this machine's published power/torque curves">{aiBusy === m.id ? "Searching…" : "AI find"}</button>
+                  <button className="btn sm" onClick={() => startEdit(m)}>Edit</button>
                   <button className="btn sm danger" onClick={() => setMachines((p) => p.filter((x) => x.id !== m.id))}>Delete</button>
                 </td>
               </tr>
@@ -773,6 +1001,8 @@ function Tools({ tools, setTools, metric }) {
       name: (t) => toolLabel(t, metric).toLowerCase(),
       type: (t) => t.type,
       flutes: (t) => t.flutes || 0,
+      coating: (t) => (t.coating || "zz").toLowerCase(),
+      loc: (t) => (Number.isFinite(t.loc) ? t.loc : 0),
       data: (t) => (hasMfgData(t) ? Object.keys(t.cutting).join("") : "zz"),
     }[sort.k] || ((t) => t.dia);
     return arr.sort((a, b) => { const ka = key(a), kb = key(b); return (ka < kb ? -1 : ka > kb ? 1 : a.dia - b.dia) * sort.d; });
@@ -963,6 +1193,8 @@ function Tools({ tools, setTools, metric }) {
               <th className="sortable" onClick={() => clickSort("type")}>Type{arrow("type")}</th>
               <th className="sortable" onClick={() => clickSort("dia")}>Ø{arrow("dia")}</th>
               <th className="sortable" onClick={() => clickSort("flutes")}>Fl{arrow("flutes")}</th>
+              <th className="sortable wide-col" onClick={() => clickSort("loc")}>LOC{arrow("loc")}</th>
+              <th className="sortable wide-col" onClick={() => clickSort("coating")}>Coating{arrow("coating")}</th>
               <th className="sortable" onClick={() => clickSort("data")}>Data{arrow("data")}</th>
               <th />
             </tr></thead>
@@ -973,10 +1205,12 @@ function Tools({ tools, setTools, metric }) {
                 <tr key={t.id} className={sel.has(t.id) ? "row-sel" : ""}>
                   <td className="ck-col"><input type="checkbox" checked={sel.has(t.id)} onChange={() => toggleSel(t.id)} /></td>
                   <td><span className="strong">{toolLabel(t, metric)}</span><br />
-                    <span className="dim mono">{[t.brand, t.pn].filter(Boolean).join(" ")}{t.name && t.series ? " · " + t.name : ""}</span></td>
-                  <td>{TOOL_TYPES[t.type]}{t.type === "chamfer_mill" && t.angle ? <span className="dim"> {fmt(t.angle, 0)}°</span> : null}{t.metricTool ? <span className="pill gen" style={{ marginLeft: 5 }}>mm</span> : null}</td>
+                    <span className="dim mono"><BrandIcon name={t.brand} size={13} />{[t.brand, t.pn].filter(Boolean).join(" ")}{t.name && t.series ? " · " + t.name : ""}</span></td>
+                  <td><TypeIcon type={t.type} />{TOOL_TYPES[t.type]}{t.type === "chamfer_mill" && t.angle ? <span className="dim"> {fmt(t.angle, 0)}°</span> : null}{t.metricTool ? <span className="pill gen" style={{ marginLeft: 5 }}>mm</span> : null}</td>
                   <td className="mono">{toolDiaLabel(t, metric)}</td>
                   <td className="mono">{t.flutes}</td>
+                  <td className="mono wide-col">{Number.isFinite(t.loc) ? diaLabel(t.loc, metric || !!t.metricTool) : <span className="dim">—</span>}</td>
+                  <td className="wide-col">{t.coating || <span className="dim">—</span>}</td>
                   <td>{Object.keys(t.cutting || {}).length
                     ? Object.keys(t.cutting).map((g) => (
                         <span key={g} className="pill grp" style={{ background: groupColor(g) + "1E", color: groupColor(g) }}>
@@ -1081,8 +1315,9 @@ function ToolEditor({ tool, heading, sub, sources, onSave, onCancel, metric }) {
 /* ============================================================
    CALCULATOR TAB
    ============================================================ */
-function Calculator({ machines, tools, metric, goTo }) {
+function Calculator({ machines, tools, setTools, metric, goTo }) {
   const [machineId, setMachineId] = useState("");
+  const [curveId, setCurveId] = useState(""); // selected spindle/belt config; "" = first continuous curve
   const [toolId, setToolId] = useState("");
   const [group, setGroup] = useState("N1");
   const [mode, setMode] = useState("rough");
@@ -1093,15 +1328,18 @@ function Calculator({ machines, tools, metric, goTo }) {
   const [fz, setFz] = useState(0.005);
   const [targetChip, setTargetChip] = useState(0.004);
   const [ipr, setIpr] = useState(0.006);
-  const [stickout, setStickout] = useState(NaN); // optional; blank = assume 3×Ø
   const [seedSrc, setSeedSrc] = useState("generic");
   const [fType, setFType] = useState("all");
   const [fBrand, setFBrand] = useState("all");
   const [fDia, setFDia] = useState("all");
   const [fData, setFData] = useState("all");
+  const [presetName, setPresetName] = useState("");
+  const skipSeed = useRef(false); // set while applying a preset so the reseed effect doesn't clobber it
 
   const machine = machines.find((m) => m.id === machineId) || null;
   const tool = tools.find((t) => t.id === toolId) || null;
+  const configs = contCurves(machine);
+  const effCurveId = configs.some((c) => c.id === curveId) ? curveId : (configs[0]?.id || "");
 
   // material is the primary filter: tools not rated for the group drop out (no data = assume it cuts everything)
   const brands = useMemo(() => [...new Set(tools.map((t) => t.brand).filter(Boolean))].sort(), [tools]);
@@ -1126,9 +1364,9 @@ function Calculator({ machines, tools, metric, goTo }) {
     if (tool.type !== "ball_endmill" && op === "finish3d") setOp("side");
   }, [toolId]); // eslint-disable-line
 
-  // reseed on tool / material / mode change
+  // reseed on tool / material / mode change (skipped while a preset is being applied)
   useEffect(() => {
-    if (!tool) return;
+    if (!tool || skipSeed.current) return;
     const s = seedParams(tool, group, mode, op);
     setSfm(s.sfm); setSeedSrc(s.source);
     if (tool.type === "drill") { if (s.ipt) setIpr(s.ipt); }
@@ -1149,8 +1387,32 @@ function Calculator({ machines, tools, metric, goTo }) {
   const result = useMemo(() => {
     if (!tool) return null;
     const opUse = tool.type === "drill" ? "drill" : tool.type === "chamfer_mill" ? "chamfer" : tool.type === "tap" ? "tap" : op;
-    return computeCut({ tool, machine, group, op: opUse, mode, sfm, ae, ap, targetChip, fz, ipr, stickout });
-  }, [tool, machine, group, op, mode, sfm, ae, ap, targetChip, fz, ipr, stickout]);
+    return computeCut({ tool, machine, curveId: effCurveId, group, op: opUse, mode, sfm, ae, ap, targetChip, fz, ipr });
+  }, [tool, machine, effCurveId, group, op, mode, sfm, ae, ap, targetChip, fz, ipr]);
+
+  /* ---- presets: a named parameter set saved on the tool ---- */
+  const applyPreset = (p) => {
+    skipSeed.current = true;
+    const q = p.params;
+    setMachineId(q.machineId || "");
+    setCurveId(q.curveId || "");
+    setGroup(q.group); setMode(q.mode); setOp(q.op);
+    setSfm(q.sfm); setAe(q.ae); setAp(q.ap); setFz(q.fz); setTargetChip(q.targetChip); setIpr(q.ipr);
+    setTimeout(() => { skipSeed.current = false; }, 100);
+  };
+  const savePreset = () => {
+    const name = presetName.trim();
+    if (!name || !tool) return;
+    const preset = {
+      id: "p" + Date.now().toString(36),
+      name,
+      params: { machineId, curveId: effCurveId, group, mode, op, sfm, ae, ap, fz, targetChip, ipr },
+      snap: result ? { rpm: result.rpm, feed: result.feed, hp: result.hp } : null,
+    };
+    setTools((prev) => prev.map((t) => (t.id === tool.id ? { ...t, presets: [...(t.presets || []).filter((x) => x.name !== name), preset] } : t)));
+    setPresetName("");
+  };
+  const deletePreset = (pid) => setTools((prev) => prev.map((t) => (t.id === tool.id ? { ...t, presets: (t.presets || []).filter((x) => x.id !== pid) } : t)));
 
   const setRpmDirect = (rpm) => {
     if (!tool || !rpm) return;
@@ -1177,7 +1439,7 @@ function Calculator({ machines, tools, metric, goTo }) {
       <div className="panel">
         <div className="sel-row">
           <Field label="Machine">
-            <select className="num" value={machineId} onChange={(e) => setMachineId(e.target.value)}>
+            <select className="num" value={machineId} onChange={(e) => { setMachineId(e.target.value); setCurveId(""); }}>
               <option value="">— no machine (no RPM clamp) —</option>
               {machines.map((m) => <option key={m.id} value={m.id}>{m.name} · {fmt(m.maxRpm, 0)} RPM</option>)}
             </select>
@@ -1191,11 +1453,21 @@ function Calculator({ machines, tools, metric, goTo }) {
             </div>
           </Field>
         </div>
+        {configs.length > 1 && (
+          <div className="chip-row" style={{ marginBottom: 12 }}>
+            <span className="chip-label">Spindle</span>
+            {configs.map((c) => (
+              <Chip key={c.id} active={effCurveId === c.id} onClick={() => setCurveId(c.id)}>
+                {c.label}{Number.isFinite(c.maxRpm) && c.maxRpm ? ` · ${fmt(c.maxRpm, 0)} RPM` : ""}
+              </Chip>
+            ))}
+          </div>
+        )}
         {tools.length > 0 && (
           <div className="filters">
             <span className="chip-label">Tools</span>
             {["all", ...Object.keys(TOOL_TYPES)].map((k) => (
-              <Chip key={k} active={fType === k} onClick={() => setFType(k)}>{k === "all" ? "All types" : TOOL_TYPES[k]}</Chip>
+              <Chip key={k} active={fType === k} onClick={() => setFType(k)}>{k === "all" ? "All types" : <><TypeIcon type={k} size={13} />{TOOL_TYPES[k]}</>}</Chip>
             ))}
             {brands.length > 1 && (
               <select className="num auto" value={fBrand} onChange={(e) => setFBrand(e.target.value)}>
@@ -1302,9 +1574,6 @@ function Calculator({ machines, tools, metric, goTo }) {
                       <NumInput value={fz} onChange={setFz} metric={metric} isFeedPerTooth digits={metric ? 3 : 5} />
                     </Field>
                   )}
-                  <Field label="Stickout (for chatter est.)" unit={lenU}>
-                    <NumInput value={stickout} onChange={setStickout} metric={metric} isLength />
-                  </Field>
                 </>
               )}
               {isDrill && (
@@ -1316,6 +1585,20 @@ function Calculator({ machines, tools, metric, goTo }) {
             {op === "adaptive" && !isDrill && (
               <p className="hint">Adaptive uses <strong>optimal load</strong> (Fusion's term) = constant radial engagement. Feed is chip-thinning compensated to hold your target chip. Conventional side milling uses plain <strong>stepover</strong> + fz because engagement spikes in corners.</p>
             )}
+            <div className="preset-bar">
+              <span className="chip-label">Presets</span>
+              {(tool.presets || []).map((p) => (
+                <span key={p.id} className="preset-chip">
+                  <button className="chip" onClick={() => applyPreset(p)}
+                    title={p.snap ? `${fmt(p.snap.rpm, 0)} RPM · ${metric ? fmt(p.snap.feed * IN_MM, 0) + " mm/min" : fmt(p.snap.feed, 1) + " ipm"} · ${fmt(p.snap.hp, 2)} HP when saved` : "Load this setup"}>{p.name}</button>
+                  <button className="preset-x" onClick={() => deletePreset(p.id)} title="Delete preset">×</button>
+                </span>
+              ))}
+              {(tool.presets || []).length === 0 && <span className="dim">none yet for this tool — dial in a cut, name it, save it</span>}
+              <input className="num txt preset-name" placeholder="Name this setup…" value={presetName}
+                onChange={(e) => setPresetName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && savePreset()} />
+              <button className="btn sm" disabled={!presetName.trim()} onClick={savePreset} title="Save the current machine, material, and cut parameters to this tool">Save preset</button>
+            </div>
           </>
         )}
       </div>
@@ -1345,18 +1628,12 @@ function Calculator({ machines, tools, metric, goTo }) {
           {Number.isFinite(result.hpAvail) && result.hp > 0 && (
             <div className="pbar-wrap">
               <div className="pbar-top">
-                <span>Spindle load @ {fmt(result.rpm, 0)} RPM {result.hpSrc === "curve" ? "· power curve" : "· flat rating (import a curve for real numbers)"}</span>
-                <span className="mono">{fmt(result.hp, 2)} / {fmt(result.hpAvail, 1)} HP · {result.hpPct > 9.99 ? ">999" : fmt(result.hpPct * 100, 0)}%</span>
+                <span>Spindle load @ {fmt(result.rpm, 0)} RPM {result.hpSrc === "curve" ? `· ${result.curveLabel || "power"} curve` : "· flat rating (import a curve for real numbers)"}</span>
+                <span className="mono">{fmt(result.hp, 2)} / {fmt(result.hpAvail, 1)} HP · {result.hpPct > 9.99 ? ">999" : fmt(result.hpPct * 100, 0)}%{Number.isFinite(result.hpBurst) ? ` · burst ${fmt(result.hpBurst, 1)} HP` : ""}</span>
               </div>
               <div className="pbar">
-                <i className={result.hpPct > 1 ? "r" : result.hpPct > 0.8 ? "a" : "g"} style={{ width: Math.min(result.hpPct * 100, 100) + "%" }} />
+                <i className={result.hpPct > 1 ? (Number.isFinite(result.hpBurst) && result.hp <= result.hpBurst ? "a" : "r") : result.hpPct > 0.8 ? "a" : "g"} style={{ width: Math.min(result.hpPct * 100, 100) + "%" }} />
               </div>
-            </div>
-          )}
-          {result.chatter && (
-            <div className={"notice " + (result.chatter.level === "high" ? "red" : result.chatter.level === "elevated" ? "amber" : "info")}>
-              <strong>Chatter / deflection risk: {result.chatter.level}.</strong> Est. tip deflection {fmt(result.chatter.delta * 1000, 2)} thou at {fmt(result.chatter.L, 2)}" stickout (L/D {fmt(result.chatter.ld, 1)}, ~{fmt(result.chatter.Ft, 0)} lbf tangential){result.chatter.assumedL ? " — stickout assumed 3×Ø, set it above to refine" : ""}.
-              {result.chatter.level === "high" ? " This will almost certainly show on the part: shorten stickout, drop DOC/WOC, or step up in diameter." : result.chatter.level === "elevated" ? " Watch walls and corners; a shorter stickout or lighter radial buys margin." : " Heuristic only — guaranteed stability needs tap-testing, but nothing here screams."}
             </div>
           )}
           {result.warnings.map((w, i) => <div key={i} className={"notice " + (w.level === "red" ? "red" : "amber")}>{w.msg}</div>)}
@@ -1412,7 +1689,7 @@ const CSS = `
 .tab.on{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
 .tab:focus-visible,.btn:focus-visible,.chip:focus-visible,.num:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 
-main{padding:18px 22px;max-width:1100px;margin:0 auto}
+main{padding:18px 22px;margin:0 auto}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 18px 16px;margin-bottom:16px}
 .panel h2{margin:0 0 4px;font-size:16px;font-weight:700}
 .hint{color:var(--label);font-size:12.5px;margin:4px 0 12px}
@@ -1430,7 +1707,7 @@ main{padding:18px 22px;max-width:1100px;margin:0 auto}
 select.num{font-family:'Archivo',sans-serif}
 .txt{font-family:'Archivo',sans-serif}
 
-.row-btns{display:flex;gap:8px;margin-top:6px}
+.row-btns{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}
 .btn{border:1px solid var(--line);background:var(--panel);color:var(--ink);font:inherit;font-weight:600;font-size:13px;padding:8px 14px;border-radius:6px;cursor:pointer}
 .btn:hover{border-color:var(--ink)}
 .btn.primary{background:var(--ink);border-color:var(--ink);color:#fff}
@@ -1438,7 +1715,9 @@ select.num{font-family:'Archivo',sans-serif}
 .btn.primary:disabled{opacity:.55;cursor:default}
 .btn.sm{padding:4px 9px;font-size:12px}
 .btn.danger{color:var(--red)}
-.row-actions{display:flex;gap:6px;justify-content:flex-end}
+/* keep td a real table-cell (display:flex here broke row border alignment) */
+.row-actions{text-align:right;white-space:nowrap}
+.row-actions .btn{margin-left:6px}
 
 .tbl{width:100%;border-collapse:collapse;margin-top:12px}
 .tbl th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--label);padding:6px 8px;border-bottom:1px solid var(--line)}
@@ -1469,7 +1748,8 @@ tr.row-sel td{background:#FBF4E6}
 .spark-line{stroke:var(--accent);stroke-width:1.6}
 .spark-fill{fill:var(--accent);opacity:.12}
 .dro .spark-line{stroke:var(--dro-green)}
-.curve-cell{display:flex;flex-direction:column;gap:2px}
+.curve-cell{display:flex;flex-direction:column;gap:6px}
+.curve-mini{display:flex;align-items:center;gap:8px}
 .pbar-wrap{margin-top:12px;border:1px solid var(--dro-line);border-radius:8px;padding:10px 12px}
 .pbar-top{display:flex;justify-content:space-between;gap:12px;font-size:11px;color:var(--dro-dim);font-family:'IBM Plex Mono',monospace;margin-bottom:7px;flex-wrap:wrap}
 .pbar{height:10px;background:#22292E;border-radius:99px;overflow:hidden}
@@ -1513,6 +1793,36 @@ tr.row-sel td{background:#FBF4E6}
 .dro .notice.info{background:#20262A;color:#9AA8A2;border-color:var(--dro-line)}
 .dro .notice.amber{background:#2A2415;border-color:#5C4A1E;color:#E8C36B}
 .dro .notice.red{background:#2C1A18;border-color:#6B322E;color:#EE8A82}
+
+/* icons: brand favicons + tool-type glyphs */
+.bicon{border-radius:3px;vertical-align:-3px;margin-right:6px}
+.ticon{vertical-align:-2px;margin-right:5px;color:var(--label)}
+.chip .ticon{color:inherit;margin-right:4px;vertical-align:-2px}
+
+/* machine curve manager */
+.curve-list{display:flex;flex-direction:column;gap:6px;margin:2px 0 12px;padding:8px;border:1px solid var(--line);border-radius:8px;background:#fff}
+.curve-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.curve-row.ai{align-items:flex-start;border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px;background:#fff}
+.curve-row.ai input[type=checkbox]{margin-top:16px;accent-color:var(--accent)}
+.curve-label{width:180px;flex:none}
+.curve-meta{display:flex;flex-direction:column;gap:4px;flex:1;min-width:220px}
+.curve-meta-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+
+/* calculation presets saved on a tool */
+.preset-bar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;border-top:1px dashed var(--line);padding-top:10px;margin-top:4px}
+.preset-chip{display:inline-flex;align-items:center}
+.preset-chip .chip{border-radius:99px 0 0 99px;border-right:0}
+.preset-x{border:1px solid var(--line);border-radius:0 99px 99px 0;background:#fff;color:var(--label);font:inherit;font-size:12px;padding:5px 8px 5px 5px;cursor:pointer;line-height:1.2}
+.preset-x:hover{color:var(--red);border-color:var(--red)}
+.preset-name{width:170px;flex:none;padding:5px 10px;font-size:12.5px;border-radius:99px}
+
+/* full-width layout: calculator goes two-column with a sticky DRO on wide screens */
+@media(min-width:1180px){
+  .calc{display:grid;grid-template-columns:minmax(540px,1.15fr) minmax(430px,1fr);gap:16px;align-items:start}
+  .calc>.panel{margin-bottom:0}
+  .calc .dro{position:sticky;top:14px}
+}
+@media(max-width:900px){.wide-col{display:none}}
 
 @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
 `;

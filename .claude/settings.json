@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tailscale serve status)",
+      "Bash(tailscale status *)",
+      "Bash(gh run watch *)",
+      "Bash(findstr *)",
+      "mcp__Claude_Preview__preview_screenshot",
+      "mcp__Claude_Preview__preview_console_logs",
+      "mcp__Claude_Preview__preview_snapshot",
+      "mcp__Claude_in_Chrome__read_console_messages",
+      "mcp__Claude_in_Chrome__list_connected_browsers",
+      "mcp__Claude_in_Chrome__get_page_text",
+      "mcp__computer-use__screenshot",
+      "mcp__claude_ai_Todoist__find-tasks",
+      "mcp__claude_ai_Todoist__find-sections",
+      "mcp__claude_ai_Todoist__find-projects"
+    ]
+  }
+}
