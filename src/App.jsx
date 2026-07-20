@@ -35,34 +35,55 @@ const ISO_COLORS = { P: "#1B5FAA", M: "#D9A400", K: "#C0392B", N: "#1E8F4E", S: 
 const groupColor = (g) => ISO_COLORS[g?.[0]] || "#6B7280";
 
 /* ---------------- icons ----------------
-   Tool-type glyphs are Material Design Icons paths (Pictogrammers, Apache-2.0),
-   pulled via Iconify and embedded so the app stays self-contained offline. */
-const TYPE_ICON_PATHS = {
-  square_endmill: "m14.5 7.3l-1 .7V7h-3v3l-1 .7v1l5-3.3zm0 4l-1 .7v-2l-3 2v2l-1 .7v1l5-3.3zm0 4l-1 .7v-2l-3 2v2l-1 .7v1l5-3.3zM8 3S7 3 7 4l3 2h4l3-2s0-1-1-1zm5.5 15v3h-3v-1z",
-  ball_endmill: "m14.5 7.3l-1 .7V7h-3v3l-1 .7v1l5-3.3zm0 4l-1 .7v-2l-3 2v2l-1 .7v1l5-3.3zm0 4l-1 .7v-2l-3 2v2l-1 .7v1l5-3.3zM7 6h10s-1-3-5-3s-5 3-5 3m6.5 12v3h-3v-1z",
-  chamfer_mill: "M13.5 17v2L12 22l-1.5-3zm1-10.7l-1 .7V6h-3v3l-1 .7v1l5-3.3zm0 4l-1 .7V9l-3 2v2l-1 .7v1l5-3.3zm0 4l-1 .7v-2l-3 2v2l-1 .7v1l5-3.3zM8 2S7 2 7 3l3 2h4l3-2s0-1-1-1z",
-  drill: "M13.5 17v2L12 22l-1.5-3zm1-10.7l-1 .7V6h-3v3l-1 .7v1l5-3.3zm0 4l-1 .7V9l-3 2v2l-1 .7v1l5-3.3zm0 4l-1 .7v-2l-3 2v2l-1 .7v1l5-3.3zM7 5h10s-1-3-5-3s-5 3-5 3",
-  tap: "m10 19.3l4-2.7V20l-2 2l-2-2zm4-6.6l-4 2.7v2L9 18v1l6-3.9V14l-1 .7zM7 2v3h10V2zm2 4v3l1 .7v3.7L9 14v1l6-3.9V10l-1 .7v-1l1-.7V6z",
+   Tool-type glyphs are original side-profile silhouettes (shank on top,
+   business end down) — no icon set ships real end mills, so these are drawn
+   to read like the actual tools at a glance. */
+const TYPE_ICONS = {
+  square_endmill: ["M9 2h6v20H9z", "M9 12.5l6 2.3", "M9 16.2l6 2.3"],
+  ball_endmill: ["M9 2h6v17a3 3 0 0 1-6 0z", "M9 12l6 2.3", "M9 15.7l6 2.3"],
+  chamfer_mill: ["M9 2h6v11l-2 7h-2l-2-7z", "M9 13h6"],
+  drill: ["M9 2h6v14l-3 6-3-6z", "M9 6.5l6 2.6", "M9 11l6 2.6"],
+  tap: ["M10.5 2h3v7h1v9l-1.8 3.5h-1.4L9.5 18V9h1z", "M9 11.2h6", "M9 13.6h6", "M9 16h6"],
 };
-function TypeIcon({ type, size = 15 }) {
-  const d = TYPE_ICON_PATHS[type];
-  if (!d) return null;
-  return <svg className="ticon" width={size} height={size} viewBox="0 0 24 24" aria-hidden="true"><path d={d} fill="currentColor" /></svg>;
+function TypeIcon({ type, size = 20 }) {
+  const paths = TYPE_ICONS[type];
+  if (!paths) return null;
+  return (
+    <svg className="ticon" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {paths.map((d, i) => <path key={i} d={d} />)}
+    </svg>
+  );
 }
 
-/* brand marks: favicons fetched at render time; unknown brands / failed loads show nothing */
+/* brand marks: favicons fetched at render time; unknown brands / failed loads show nothing.
+   Every domain here was verified to return a real icon (not the default globe). */
 const BRAND_DOMAINS = {
-  haas: "haascnc.com", tormach: "tormach.com", kennametal: "kennametal.com", widia: "widia.com",
-  harvey: "harveytool.com", helical: "helicaltool.com", osg: "osgtool.com", guhring: "guhring.com",
-  "gühring": "guhring.com", sandvik: "sandvik.coromant.com", coromant: "sandvik.coromant.com",
-  iscar: "iscar.com", seco: "secotools.com", "walter": "walter-tools.com", mitsubishi: "mmc-carbide.com",
+  // cutting tool brands
+  kennametal: "kennametal.com", widia: "widia.com", harvey: "harveytool.com",
+  helical: "helicaltool.com", osg: "osgtool.com", guhring: "guhring.com", "gühring": "guhring.com",
+  sandvik: "sandvik.coromant.com", coromant: "sandvik.coromant.com", iscar: "iscar.com",
+  seco: "secotools.com", walter: "walter-tools.com", mitsubishi: "mmc-carbide.com",
   kyocera: "kyocera-sgstool.com", sgs: "kyocera-sgstool.com", "yg-1": "yg1.kr", yg1: "yg1.kr",
   niagara: "niagaracutter.com", emuge: "emuge.com", garr: "garrtool.com", "ma ford": "maford.com",
   "m.a. ford": "maford.com", "micro 100": "micro100.com", micro100: "micro100.com",
   lakeshore: "lakeshorecarbide.com", maritool: "maritool.com", destiny: "destinytool.com",
-  imco: "imcousa.com", amana: "amanatool.com", mazak: "mazakusa.com", okuma: "okuma.com",
-  dmg: "dmgmori.com", doosan: "doosanmachinetools.com", "dn solutions": "dn-solutions.com",
-  fanuc: "fanucamerica.com", hurco: "hurco.com", fadal: "fadal.com", syil: "syil.com",
+  imco: "imcousa.com", amana: "amanatool.com", melin: "melintool.com", morse: "morsecuttingtools.com",
+  onsrud: "onsrud.com", vortex: "vortextool.com",
+  // machine tool brands
+  haas: "haascnc.com", tormach: "tormach.com", mazak: "mazakusa.com", okuma: "okuma.com",
+  dmg: "dmgmori.com", "mori seiki": "dmgmori.com", deckel: "dmgmori.com", maho: "dmgmori.com",
+  doosan: "doosanmachinetools.com", "dn solutions": "dn-solutions.com", "hyundai wia": "hyundai-wia.com",
+  fanuc: "fanucamerica.com", robodrill: "fanucamerica.com", hurco: "hurco.com", fadal: "fadalcnc.com",
+  syil: "syil.com", brother: "brothercnc.com", speedio: "brothercnc.com", makino: "makino.com",
+  matsuura: "matsuurausa.com", kitamura: "kitamura-machinery.com", milltronics: "milltronics.net",
+  hardinge: "hardinge.com", bridgeport: "hardinge.com", grizzly: "grizzly.com",
+  "precision matthews": "precisionmatthews.com", "south bend": "southbendlathe.com",
+  southbend: "southbendlathe.com", kent: "kentusa.com", nakamura: "nakamura-tome.com",
+  prototrak: "southwesternindustries.com", "southwestern industries": "southwesternindustries.com",
+  emco: "emco-world.com", datron: "datron.com", tsugami: "tsugamiamerica.com",
+  victor: "victortaichung.com", langmuir: "langmuirsystems.com", avid: "avidcnc.com",
+  shopsabre: "shopsabre.com",
 };
 function brandDomain(name) {
   const n = (name || "").toLowerCase();
@@ -212,9 +233,48 @@ async function apiPost(path, body) {
   return data;
 }
 
+/* streaming POST: the Worker sends SSE progress milestones while the AI works,
+   then a final result — so 1–5 min lookups show what's happening instead of a dead spinner */
+async function apiStream(path, body, onProgress) {
+  const response = await fetch(`${API_BASE}${path}?stream=1`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok || !(response.headers.get("content-type") || "").includes("text/event-stream")) {
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `API request failed (${response.status})`);
+    return data; // older Worker without streaming — plain JSON still works
+  }
+  const reader = response.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "", result = null, errMsg = null;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf("\n\n")) >= 0) {
+      const chunk = buf.slice(0, i);
+      buf = buf.slice(i + 2);
+      for (const line of chunk.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        let ev;
+        try { ev = JSON.parse(line.slice(5)); } catch { continue; }
+        if (ev.type === "progress" && ev.msg && onProgress) onProgress(ev.msg);
+        else if (ev.type === "result") result = ev.data;
+        else if (ev.type === "error") errMsg = ev.error;
+      }
+    }
+  }
+  if (errMsg) throw new Error(errMsg);
+  if (!result) throw new Error("connection dropped before the result arrived — try again");
+  return result;
+}
+
 /* ---------------- AI lookup ---------------- */
-async function lookupTool(brand, pn) {
-  return apiPost("/api/tool-lookup", { brand, pn });
+async function lookupTool(brand, pn, onProgress) {
+  return apiStream("/api/tool-lookup", { brand, pn }, onProgress);
 }
 
 /* ---------------- AI torque-curve digitization (PDF or image) ---------------- */
@@ -229,8 +289,20 @@ async function digitizeCurve(file) {
 }
 
 /* ---------------- AI machine-curve web search ---------------- */
-async function findMachineCurves(machine) {
-  return apiPost("/api/machine-curves", { machine: machine.name, maxRpm: machine.maxRpm, notes: machine.notes || "" });
+async function findMachineCurves(machine, onProgress) {
+  return apiStream("/api/machine-curves", { machine: machine.name, maxRpm: machine.maxRpm, notes: machine.notes || "" }, onProgress);
+}
+
+/* mm:ss for the long-lookup elapsed timers */
+function useElapsed(running) {
+  const [secs, setSecs] = useState(0);
+  useEffect(() => {
+    if (!running) { setSecs(0); return; }
+    const t0 = Date.now();
+    const iv = setInterval(() => setSecs(Math.floor((Date.now() - t0) / 1000)), 1000);
+    return () => clearInterval(iv);
+  }, [running]);
+  return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
 }
 
 /* ---------------- Fusion .tools import (a .tools file is a zip with JSON inside) ---------------- */
@@ -587,10 +659,12 @@ export default function App() {
       </nav>
 
       {!loaded ? <div className="loading">Loading your shop data…</div> : (
+        /* all tabs stay mounted (hidden with display:none) so lookup queues and
+           AI curve searches keep running while you navigate around the app */
         <main>
-          {tab === "machines" && <Machines machines={machines} setMachines={setMachines} />}
-          {tab === "tools" && <Tools tools={tools} setTools={setTools} metric={metric} />}
-          {tab === "calc" && <Calculator machines={machines} tools={tools} setTools={setTools} metric={metric} goTo={setTab} />}
+          <div style={{ display: tab === "machines" ? "" : "none" }}><Machines machines={machines} setMachines={setMachines} /></div>
+          <div style={{ display: tab === "tools" ? "" : "none" }}><Tools tools={tools} setTools={setTools} metric={metric} /></div>
+          <div style={{ display: tab === "calc" ? "" : "none" }}><Calculator machines={machines} tools={tools} setTools={setTools} metric={metric} goTo={setTab} /></div>
         </main>
       )}
     </div>
@@ -610,7 +684,9 @@ function Machines({ machines, setMachines }) {
   const [curveDraft, setCurveDraft] = useState(null); // review state: {target, srcName, notes, raw?:pairs, unit?, points?, label, duty, maxRpm}
   const [aiBusy, setAiBusy] = useState(null); // "draft" or machine id being searched
   const [aiDraft, setAiDraft] = useState(null); // review state: {target, targetName, machine, curves:[{checked,...}], sources, notes}
+  const [aiProgress, setAiProgress] = useState(""); // latest milestone from the Worker's SSE stream
   const curveFileRef = useRef(null);
+  const aiElapsed = useElapsed(aiBusy);
 
   const targetName = (t) => (t === "draft" ? (draft.name.trim() || "new machine") : machines.find((m) => m.id === t)?.name || "machine");
   const targetCurves = (t) => (t === "draft" ? draft.curves : machines.find((m) => m.id === t)?.curves || []);
@@ -679,9 +755,9 @@ function Machines({ machines, setMachines }) {
       ? { name: draft.name.trim(), maxRpm: parseFloat(draft.maxRpm) || null, notes: draft.notes }
       : machines.find((x) => x.id === target);
     if (!m?.name) return;
-    setCurveErr(""); setAiDraft(null); setAiBusy(target);
+    setCurveErr(""); setAiDraft(null); setAiBusy(target); setAiProgress("");
     try {
-      const res = await findMachineCurves(m);
+      const res = await findMachineCurves(m, setAiProgress);
       const curves = (res.curves || [])
         .map((c) => ({
           checked: true,
@@ -762,7 +838,16 @@ function Machines({ machines, setMachines }) {
       </div>
       <input ref={curveFileRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.csv,.txt,.tsv" style={{ display: "none" }} onChange={onCurveFile} />
       {curveBusy && <div className="notice info">Reading the curve with AI vision — pulling 12–24 points off the chart. Usually 15–30 seconds…</div>}
-      {aiBusy && <div className="notice info">Searching the web for <strong>{targetName(aiBusy)}</strong>'s published power/torque curves — manuals, spec sheets, brochures. Usually 1–2 minutes; results land below for review…</div>}
+      {aiBusy && (
+        <div className="notice info">
+          <div className="prog-row">
+            <span>Searching the web for <strong>{targetName(aiBusy)}</strong>'s published power/torque curves — manuals, spec sheets, brochures. Usually 2–5 minutes (it retries on upstream hiccups); safe to switch tabs, this keeps running.</span>
+            <span className="mono dim">{aiElapsed}</span>
+          </div>
+          <div className="milestone">{aiProgress || "Contacting the AI…"}</div>
+          <div className="prog indet"><i /></div>
+        </div>
+      )}
       {curveErr && <div className="notice amber">{curveErr}</div>}
 
       {curveDraft && draftPoints && (
@@ -901,9 +986,11 @@ function Tools({ tools, setTools, metric }) {
   const [tFData, setTFData] = useState("all");
   const [sort, setSort] = useState({ k: "dia", d: 1 });
   const [batch, setBatch] = useState({ total: 0, done: 0 });
+  const [progress, setProgress] = useState(""); // latest milestone from the Worker's SSE stream
   const fileRef = useRef(null);
   const toolsRef = useRef(tools);
   useEffect(() => { toolsRef.current = tools; }, [tools]);
+  const elapsed = useElapsed(active);
 
   // sequential queue processor — one web lookup at a time, results stack up below for review
   useEffect(() => {
@@ -911,12 +998,13 @@ function Tools({ tools, setTools, metric }) {
     const job = queue[0];
     setQueue((q) => q.slice(1));
     setActive(job);
+    setProgress("");
     (async () => {
       try {
         const existing = job.kind === "enrich" ? toolsRef.current.find((t) => t.id === job.id) : null;
         const brand = (job.kind === "enrich" ? existing?.brand : job.brand) || "unknown brand";
         const pnq = job.kind === "enrich" ? (existing?.pn || existing?.name) : job.pn;
-        const res = await lookupTool(brand, pnq);
+        const res = await lookupTool(brand, pnq, setProgress);
         if (!res.found || !res.tool) {
           if (job.kind === "new") {
             setLookupErr(`Couldn't identify "${brand} ${pnq}" on the web. Enter it manually — generic tables will be used until you add numbers.`);
@@ -1108,10 +1196,13 @@ function Tools({ tools, setTools, metric }) {
       {pendingCount > 0 && (
         <div className="notice info">
           <div className="prog-row">
-            <span>Searching the web for <strong>{jobLabel(active)}</strong>{queue.length > 0 ? ` · ${queue.length} more queued` : ""} — results land below for review; keep queuing.</span>
-            {batch.total > 1 && <span className="mono dim">{batch.done}/{batch.total}</span>}
+            <span>Searching the web for <strong>{jobLabel(active)}</strong>{queue.length > 0 ? ` · ${queue.length} more queued` : ""} — safe to switch tabs, this keeps running. Results land below for review.</span>
+            <span className="mono dim">{elapsed}{batch.total > 1 ? ` · ${batch.done}/${batch.total}` : ""}</span>
           </div>
-          {batch.total > 1 && <div className="prog"><i style={{ width: (100 * batch.done / batch.total).toFixed(1) + "%" }} /></div>}
+          {active && <div className="milestone">{progress || "Contacting the AI…"}</div>}
+          {batch.total > 1
+            ? <div className="prog"><i style={{ width: (100 * batch.done / batch.total).toFixed(1) + "%" }} /></div>
+            : <div className="prog indet"><i /></div>}
         </div>
       )}
       {pendingCount === 0 && batch.total > 1 && batch.done >= batch.total && (
@@ -1467,7 +1558,7 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
           <div className="filters">
             <span className="chip-label">Tools</span>
             {["all", ...Object.keys(TOOL_TYPES)].map((k) => (
-              <Chip key={k} active={fType === k} onClick={() => setFType(k)}>{k === "all" ? "All types" : <><TypeIcon type={k} size={13} />{TOOL_TYPES[k]}</>}</Chip>
+              <Chip key={k} active={fType === k} onClick={() => setFType(k)}>{k === "all" ? "All types" : <><TypeIcon type={k} size={16} />{TOOL_TYPES[k]}</>}</Chip>
             ))}
             {brands.length > 1 && (
               <select className="num auto" value={fBrand} onChange={(e) => setFBrand(e.target.value)}>
@@ -1739,6 +1830,9 @@ select.num{font-family:'Archivo',sans-serif}
 .prog-row{display:flex;justify-content:space-between;gap:12px;align-items:center}
 .prog{height:6px;background:#D8DCD4;border-radius:99px;overflow:hidden;margin-top:7px}
 .prog i{display:block;height:100%;background:var(--accent);border-radius:99px;transition:width .4s ease}
+.prog.indet i{width:38%;animation:prog-slide 1.6s ease-in-out infinite}
+@keyframes prog-slide{0%{margin-left:-38%}100%{margin-left:100%}}
+.milestone{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--accent-ink);margin-top:6px}
 .bulkbar{display:flex;gap:8px;align-items:center;background:var(--info-bg);border:1px solid var(--line);border-radius:8px;padding:7px 12px;margin-bottom:8px}
 th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
 th.sortable:hover{color:var(--ink)}
@@ -1796,8 +1890,9 @@ tr.row-sel td{background:#FBF4E6}
 
 /* icons: brand favicons + tool-type glyphs */
 .bicon{border-radius:3px;vertical-align:-3px;margin-right:6px}
-.ticon{vertical-align:-2px;margin-right:5px;color:var(--label)}
-.chip .ticon{color:inherit;margin-right:4px;vertical-align:-2px}
+.ticon{vertical-align:-4px;margin-right:6px;color:var(--ink);opacity:.75}
+.chip .ticon{color:inherit;opacity:1;margin-right:5px;vertical-align:-3px}
+.chip-on .ticon{color:#fff}
 
 /* machine curve manager */
 .curve-list{display:flex;flex-direction:column;gap:6px;margin:2px 0 12px;padding:8px;border:1px solid var(--line);border-radius:8px;background:#fff}

@@ -115,6 +115,18 @@ and tool-type glyphs embedded as MDI (Apache-2.0) SVG paths in `TYPE_ICON_PATHS`
   buffered responses dying at ~100 s behind Cloudflare with a plain-text
   "error code: 524" page that crashed `response.json()`. Don't switch back to
   non-streaming calls.
+- With `?stream=1`, tool-lookup and machine-curves return an SSE stream of real
+  progress milestones (web search #, reading results, chars written, retry
+  attempts) translated from provider events, then a final result event — consumed
+  by `apiStream()` in the frontend and shown with an elapsed timer. Plain POST
+  (no query param) still returns buffered JSON.
+- All three tabs stay MOUNTED (hidden via display:none in `App`) so the lookup
+  queue and AI curve searches keep running while the user navigates. Don't switch
+  back to conditional rendering.
+- Tool-type icons are original hand-drawn SVG silhouettes in `TYPE_ICONS` — the
+  user rejected MDI screw glyphs ("look like bolts"). Verify icon changes by
+  rasterizing with sharp (in node_modules); Browser-pane screenshots time out in
+  this dev environment.
 - The Worker's prompts are **load-bearing and deliberately verbose** — they were restored
   from the original artifact after the port condensed them. Do not "tidy" them. In
   particular keep: the ISO group-code legend (the model needs it to file cutting rows in

@@ -5,14 +5,15 @@ const CORS = {
 };
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     if (request.method === "OPTIONS") return new Response(null, { headers: CORS });
     const url = new URL(request.url);
+    const streaming = url.searchParams.get("stream") === "1";
     try {
       if (request.method !== "POST") return json({ error: "POST required" }, 405);
-      if (url.pathname === "/api/tool-lookup") return await toolLookup(request, env);
+      if (url.pathname === "/api/tool-lookup") return await toolLookup(request, env, ctx, streaming);
       if (url.pathname === "/api/curve-digitize") return await curveDigitize(request, env);
-      if (url.pathname === "/api/machine-curves") return await machineCurves(request, env);
+      if (url.pathname === "/api/machine-curves") return await machineCurves(request, env, ctx, streaming);
       return json({ error: "Not found" }, 404);
     } catch (err) {
       return json({ error: err.message || "Worker error" }, 500);
@@ -20,7 +21,33 @@ export default {
   },
 };
 
-async function toolLookup(request, env) {
+/* With ?stream=1 the response is an SSE stream of {type:"progress",msg} events
+   (real milestones surfaced from the provider's own stream: web searches
+   starting/finishing, text being written, retry attempts) followed by a final
+   {type:"result",data} or {type:"error",error}. Keeps the shop floor informed
+   during 1–5 min lookups instead of a silent spinner. */
+function sseResponse(ctx, runner) {
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const enc = new TextEncoder();
+  const send = (obj) => writer.write(enc.encode("data: " + JSON.stringify(obj) + "\n\n")).catch(() => {});
+  const heartbeat = setInterval(() => writer.write(enc.encode(": hb\n\n")).catch(() => {}), 10000);
+  ctx.waitUntil((async () => {
+    try {
+      const result = await runner((msg) => send({ type: "progress", msg }));
+      await send({ type: "result", data: result });
+    } catch (err) {
+      await send({ type: "error", error: err.message || "Worker error" });
+    }
+    clearInterval(heartbeat);
+    try { await writer.close(); } catch { /* client already gone */ }
+  })());
+  return new Response(readable, {
+    headers: { ...CORS, "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
+  });
+}
+
+async function toolLookup(request, env, ctx, streaming) {
   const { brand, pn } = await request.json();
   if (!brand || !pn) return json({ error: "brand and pn are required" }, 400);
   const prompt = `Search the web for the cutting tool "${brand} ${pn}" (a milling cutter, drill, or tap part/order number from a tooling manufacturer).
@@ -54,11 +81,9 @@ Group key: N=nonferrous (N1 wrought alum, N2 cast alum low-Si, N3 cast alum high
 
 Use inches internally: convert metric diameter, LOC, pitch, feed per tooth, and feed per rev into inches. Prefer manufacturer-published cutting data. Only include cutting groups the manufacturer actually publishes or clearly intends — do not interpolate or invent ranges for groups they don't rate the tool for. If you can identify the tool but not published cutting data, set found=true with an empty "cutting" array. If you cannot identify the tool at all, set found=false and leave the tool fields empty or null rather than filling in placeholder numbers.`;
 
-  const text = await modelJson(env, {
-    prompt,
-    useWebSearch: true,
-  });
-  return json(parseJsonOutput(text));
+  const run = async (onProgress) => parseJsonOutput(await modelJson(env, { prompt, useWebSearch: true, onProgress }));
+  if (streaming) return sseResponse(ctx, run);
+  return json(await run());
 }
 
 async function curveDigitize(request, env) {
@@ -88,7 +113,7 @@ If no recognizable power/torque curve exists in the file, set found=false with e
   return json(parseJsonOutput(text));
 }
 
-async function machineCurves(request, env) {
+async function machineCurves(request, env, ctx, streaming) {
   const { machine, maxRpm, notes } = await request.json();
   if (!machine) return json({ error: "machine is required" }, 400);
   const prompt = `Search the web for manufacturer-published spindle power and torque curve data for the machine tool "${machine}"${Number.isFinite(maxRpm) ? ` (max spindle speed about ${maxRpm} RPM)` : ""}${notes ? ` (owner's notes: ${notes})` : ""}.
@@ -122,12 +147,9 @@ Respond with ONLY a raw JSON object, no markdown fences, no preamble:
 
 Ground every curve in published data: an actual curve chart, or published torque/power figures at stated RPMs (e.g. "75 ft-lb at 1400 RPM, 30 HP peak, 8100 RPM max"). If you can only find a few published anchor points, return just those points and say so in the curve's notes rather than inventing a smooth curve. Do NOT fabricate numbers for a machine you cannot find data for — set found=false with an empty curves array instead. If the machine was sold with multiple factory spindle options (e.g. 8100 vs 12000 RPM, standard vs high-torque), pick the option matching the stated max RPM and note the assumption; if none matches, return the standard option.`;
 
-  const text = await modelJson(env, {
-    prompt,
-    useWebSearch: true,
-    maxTokens: 4000,
-  });
-  return json(parseJsonOutput(text));
+  const run = async (onProgress) => parseJsonOutput(await modelJson(env, { prompt, useWebSearch: true, maxTokens: 4000, onProgress }));
+  if (streaming) return sseResponse(ctx, run);
+  return json(await run());
 }
 
 /* ---------------- model transport ----------------
@@ -137,14 +159,17 @@ Ground every curve in published data: an actual curve chart, or published torque
    response.json(). Streaming keeps bytes flowing; retries cover the rest. */
 
 async function modelJson(env, request) {
-  if (env.OPENAI_API_KEY) return withRetry(() => openaiResponse(env, request));
-  if (env.ANTHROPIC_API_KEY) return withRetry(() => anthropicResponse(env, request));
-  throw new Error("Set OPENAI_API_KEY or ANTHROPIC_API_KEY as a Worker secret");
+  const onProgress = request.onProgress || (() => {});
+  const call = env.OPENAI_API_KEY ? () => openaiResponse(env, request)
+    : env.ANTHROPIC_API_KEY ? () => anthropicResponse(env, request)
+    : null;
+  if (!call) throw new Error("Set OPENAI_API_KEY or ANTHROPIC_API_KEY as a Worker secret");
+  return withRetry(call, 3, (attempt, tries) => onProgress(`Upstream hiccup — retrying from scratch (attempt ${attempt} of ${tries})…`));
 }
 
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529]);
 
-async function withRetry(doCall, tries = 3) {
+async function withRetry(doCall, tries = 3, onRetry = () => {}) {
   let lastErr;
   for (let i = 0; i < tries; i++) {
     try {
@@ -153,10 +178,30 @@ async function withRetry(doCall, tries = 3) {
       lastErr = err;
       // TypeError = fetch network failure / stream cut mid-flight — retryable too
       if (!(err.retryable || err instanceof TypeError) || i === tries - 1) throw err;
+      onRetry(i + 2, tries);
       await new Promise((r) => setTimeout(r, 1200 * (i + 1)));
     }
   }
   throw lastErr;
+}
+
+/* translate raw provider stream events into human-readable shop-floor milestones */
+function progressTracker(onProgress) {
+  let searches = 0;
+  let chars = 0;
+  let lastCharsMsg = 0;
+  return {
+    searchStart() { searches++; onProgress(`Web search #${searches} running…`); },
+    searchDone() { onProgress(`Web search #${searches} done — reading results…`); },
+    reasoning() { onProgress(searches ? "Reasoning over what it found…" : "Reading the request…"); },
+    text(delta) {
+      chars += delta.length;
+      if (chars - lastCharsMsg >= 400 || lastCharsMsg === 0) {
+        lastCharsMsg = chars;
+        onProgress(`Writing up the findings… (${chars.toLocaleString("en-US")} characters)`);
+      }
+    },
+  };
 }
 
 function upstreamError(provider, status, bodyText) {
@@ -227,10 +272,14 @@ async function openaiResponse(env, request) {
   });
   if (!response.ok) throw upstreamError("OpenAI", response.status, await response.text());
 
+  const track = progressTracker(request.onProgress || (() => {}));
   let text = "";
   let failure = null;
   await readSse(response, (ev) => {
-    if (ev.type === "response.output_text.delta" && typeof ev.delta === "string") text += ev.delta;
+    if (ev.type === "response.output_text.delta" && typeof ev.delta === "string") { text += ev.delta; track.text(ev.delta); }
+    else if (ev.type === "response.output_item.added" && ev.item?.type === "web_search_call") track.searchStart();
+    else if (ev.type === "response.web_search_call.completed") track.searchDone();
+    else if (ev.type === "response.output_item.added" && ev.item?.type === "reasoning") track.reasoning();
     else if (ev.type === "response.failed") failure = ev.response?.error?.message || "response.failed";
     else if (ev.type === "error") failure = ev.message || ev.error?.message || "stream error";
   });
@@ -280,10 +329,13 @@ async function anthropicResponse(env, request) {
   });
   if (!response.ok) throw upstreamError("Anthropic", response.status, await response.text());
 
+  const track = progressTracker(request.onProgress || (() => {}));
   let text = "";
   let failure = null;
   await readSse(response, (ev) => {
-    if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") text += ev.delta.text;
+    if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") { text += ev.delta.text; track.text(ev.delta.text); }
+    else if (ev.type === "content_block_start" && ev.content_block?.type === "server_tool_use") track.searchStart();
+    else if (ev.type === "content_block_start" && ev.content_block?.type === "web_search_tool_result") track.searchDone();
     else if (ev.type === "error") failure = ev.error?.message || "stream error";
   });
   if (failure) {
