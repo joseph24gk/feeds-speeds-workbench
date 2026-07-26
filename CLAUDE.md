@@ -9,6 +9,11 @@ physics fallback tables always. Built for shop-floor use.
    "machine enamel + DRO" styling, kept deliberately. It lives in the `CSS` template
    literal at the bottom of `src/App.jsx`. Change it only when explicitly asked.
    An earlier Codex static rewrite was rejected — do not reintroduce it.
+4. **Generic F&S tables are reference-reconciled.** `GROUPS` SFM ranges + chiploads
+   were tuned (2026-07-26) to match FSWizard-class calculators (6gtools, Machining
+   Doctor). Don't casually re-tune them; if you do, re-check against those references
+   and keep the "match other calculators" invariant. `uhp` is specific MRR (in³/min
+   per HP), not classic unit power — `hp = mrr / uhp`.
 2. **API keys never touch the frontend or the repo.** All AI calls go through the
    Cloudflare Worker, which holds the key as a Worker secret. Never add a provider
    key to `.env`, `src/`, or anything committed. The frontend bundle is public.
@@ -72,7 +77,15 @@ toolpaths; spindle-load bar (green/amber/red) that knows continuous vs burst rat
 spindle/belt config chips when a machine has >1 continuous curve (config can carry its
 own max RPM — low belt clamps lower); RPM clamped to machine/config max; named presets
 saved per tool (params + result snapshot, applied without being clobbered by the
-reseed effect — see `skipSeed`). The chatter/deflection advisory was REMOVED on
+reseed effect — see `skipSeed`); "quick tool by size" spins up an unsaved
+drill/end-mill from just a size (`parseDrillSize` accepts #7 / F / 1/4 / .201 /
+8.5mm via `NUMBER_DRILLS`+`LETTER_DRILLS`) for instant material-based generic
+F&S (`quickTool` overrides the library tool; seed effects key on `toolKey`);
+manufacturer-data source URLs persist on the tool and render as "cited from
+<host>" links. The machine/material/tool dropdowns are a custom `IconSelect`
+(native `<option>` can't hold favicons/color squares) whose options are
+`<button>`s so the wrapping `Field` `<label>` doesn't forward clicks and
+re-toggle the menu. The chatter/deflection advisory was REMOVED on
 purpose (2026-07-20, user request, backburnered — see Todoist backlog; old code in git
 history at 27809bf). Don't reintroduce it uninvited.
 
