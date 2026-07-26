@@ -5,21 +5,25 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
    All internal math is INCH. Metric is a display layer.
    ============================================================ */
 
+/* SFM ranges + chipload (ipt at 1/2" Ø) are reconciled against common carbide
+   references (6gtools AlTiN chart, Machining Doctor chip-load charts, general
+   chipload charts) so generic seeds land near what FSWizard and friends suggest.
+   uhp = specific MRR (in³/min per HP); hp = mrr/uhp. stock = radial stock-to-leave. */
 const GROUPS = {
-  N1: { label: "N1 · Wrought aluminum", ex: "6061, 7075, 2024, MIC-6", sfm: [900, 1600], ipt: 0.005, uhp: 3.5, stock: [0.010, 0.015] },
-  N2: { label: "N2 · Cast aluminum (low Si)", ex: "A356, 319", sfm: [700, 1100], ipt: 0.0045, uhp: 3.0, stock: [0.010, 0.015] },
-  N3: { label: "N3 · Cast aluminum (high Si >12%)", ex: "390, A413", sfm: [400, 700], ipt: 0.004, uhp: 2.5, stock: [0.010, 0.015] },
-  N4: { label: "N4 · Brass / copper", ex: "360 brass, C110", sfm: [500, 900], ipt: 0.004, uhp: 2.2, stock: [0.008, 0.012] },
-  P1: { label: "P1 · Low-carbon / free-machining steel", ex: "1018, 12L14, A36", sfm: [400, 550], ipt: 0.004, uhp: 1.1, stock: [0.005, 0.010] },
-  P2: { label: "P2 · Medium-carbon / alloy steel", ex: "1045, 4140 ann., 4340 ann.", sfm: [325, 450], ipt: 0.0035, uhp: 1.0, stock: [0.005, 0.010] },
-  P3: { label: "P3 · Alloy steel, pre-hard (28–38 HRC)", ex: "4140HT, P20, 4340HT", sfm: [250, 350], ipt: 0.003, uhp: 0.85, stock: [0.005, 0.008] },
-  M1: { label: "M1 · Free-machining stainless", ex: "303", sfm: [300, 400], ipt: 0.0035, uhp: 0.95, stock: [0.005, 0.010] },
-  M2: { label: "M2 · Austenitic stainless", ex: "304, 316", sfm: [200, 300], ipt: 0.003, uhp: 0.85, stock: [0.005, 0.010] },
-  M3: { label: "M3 · PH / duplex stainless", ex: "17-4, 15-5, 2205", sfm: [180, 260], ipt: 0.0028, uhp: 0.8, stock: [0.004, 0.008] },
-  K1: { label: "K1 · Cast iron", ex: "Gray, ductile", sfm: [350, 500], ipt: 0.004, uhp: 1.4, stock: [0.006, 0.010] },
-  S1: { label: "S1 · Titanium alloys", ex: "Ti-6Al-4V", sfm: [150, 250], ipt: 0.0028, uhp: 0.7, stock: [0.004, 0.008] },
-  S2: { label: "S2 · Nickel superalloys", ex: "Inconel 718, 625", sfm: [70, 120], ipt: 0.0022, uhp: 0.5, stock: [0.004, 0.006] },
-  H1: { label: "H1 · Hardened steel (45–60 HRC)", ex: "D2, H13, A2 hardened", sfm: [120, 220], ipt: 0.002, uhp: 0.65, stock: [0.003, 0.005] },
+  N1: { label: "N1 · Wrought aluminum", ex: "6061, 7075, 2024, MIC-6", sfm: [600, 1200], ipt: 0.004, uhp: 3.5, stock: [0.010, 0.015] },
+  N2: { label: "N2 · Cast aluminum (low Si)", ex: "A356, 319", sfm: [500, 900], ipt: 0.0035, uhp: 3.0, stock: [0.010, 0.015] },
+  N3: { label: "N3 · Cast aluminum (high Si >12%)", ex: "390, A413", sfm: [350, 600], ipt: 0.003, uhp: 2.5, stock: [0.010, 0.015] },
+  N4: { label: "N4 · Brass / copper", ex: "360 brass, C110", sfm: [400, 800], ipt: 0.0035, uhp: 2.2, stock: [0.008, 0.012] },
+  P1: { label: "P1 · Low-carbon / free-machining steel", ex: "1018, 12L14, A36", sfm: [350, 500], ipt: 0.003, uhp: 1.1, stock: [0.005, 0.010] },
+  P2: { label: "P2 · Medium-carbon / alloy steel", ex: "1045, 4140 ann., 4340 ann.", sfm: [275, 400], ipt: 0.0028, uhp: 1.0, stock: [0.005, 0.010] },
+  P3: { label: "P3 · Alloy steel, pre-hard (28–38 HRC)", ex: "4140HT, P20, 4340HT", sfm: [200, 300], ipt: 0.0025, uhp: 0.85, stock: [0.005, 0.008] },
+  M1: { label: "M1 · Free-machining stainless", ex: "303", sfm: [250, 375], ipt: 0.003, uhp: 0.95, stock: [0.005, 0.010] },
+  M2: { label: "M2 · Austenitic stainless", ex: "304, 316", sfm: [180, 280], ipt: 0.0022, uhp: 0.85, stock: [0.005, 0.010] },
+  M3: { label: "M3 · PH / duplex stainless", ex: "17-4, 15-5, 2205", sfm: [150, 240], ipt: 0.002, uhp: 0.8, stock: [0.004, 0.008] },
+  K1: { label: "K1 · Cast iron", ex: "Gray, ductile", sfm: [300, 500], ipt: 0.0035, uhp: 1.4, stock: [0.006, 0.010] },
+  S1: { label: "S1 · Titanium alloys", ex: "Ti-6Al-4V", sfm: [120, 220], ipt: 0.0022, uhp: 0.7, stock: [0.004, 0.008] },
+  S2: { label: "S2 · Nickel superalloys", ex: "Inconel 718, 625", sfm: [60, 120], ipt: 0.002, uhp: 0.5, stock: [0.004, 0.006] },
+  H1: { label: "H1 · Hardened steel (45–60 HRC)", ex: "D2, H13, A2 hardened", sfm: [100, 180], ipt: 0.0018, uhp: 0.65, stock: [0.003, 0.005] },
 };
 
 // Drill fallback: fraction of endmill SFM, and IPR at 1/2" dia
@@ -29,6 +33,39 @@ const DRILL = {
 };
 
 const TOOL_TYPES = { square_endmill: "Square end mill", ball_endmill: "Ball end mill", chamfer_mill: "Chamfer mill", drill: "Drill", tap: "Tap" };
+
+/* drill-size decimal equivalents (inch) — number (#1–80) and letter (A–Z) gauges */
+const NUMBER_DRILLS = [null, 0.2280, 0.2210, 0.2130, 0.2090, 0.2055, 0.2040, 0.2010, 0.1990, 0.1960, 0.1935, 0.1910, 0.1890, 0.1850, 0.1820, 0.1800, 0.1770, 0.1730, 0.1695, 0.1660, 0.1610, 0.1590, 0.1570, 0.1540, 0.1520, 0.1495, 0.1470, 0.1440, 0.1405, 0.1360, 0.1285, 0.1200, 0.1160, 0.1130, 0.1110, 0.1100, 0.1065, 0.1040, 0.1015, 0.0995, 0.0980, 0.0960, 0.0935, 0.0890, 0.0860, 0.0820, 0.0810, 0.0785, 0.0760, 0.0730, 0.0700, 0.0670, 0.0635, 0.0595, 0.0550, 0.0520, 0.0465, 0.0430, 0.0420, 0.0410, 0.0400, 0.0390, 0.0380, 0.0370, 0.0360, 0.0350, 0.0330, 0.0320, 0.0310, 0.0292, 0.0280, 0.0260, 0.0250, 0.0240, 0.0225, 0.0210, 0.0200, 0.0180, 0.0160, 0.0145, 0.0135];
+const LETTER_DRILLS = { A: 0.234, B: 0.238, C: 0.242, D: 0.246, E: 0.250, F: 0.257, G: 0.261, H: 0.266, I: 0.272, J: 0.277, K: 0.281, L: 0.290, M: 0.295, N: 0.302, O: 0.316, P: 0.323, Q: 0.332, R: 0.339, S: 0.348, T: 0.358, U: 0.368, V: 0.377, W: 0.386, X: 0.397, Y: 0.404, Z: 0.413 };
+
+/* parse a drill/tool size string → { dia (inch), label, metric } or null.
+   accepts: decimal ".201" / "0.25", fraction "1/4" "5/16", metric "8.5mm" "6 mm",
+   number gauge "#7" / "no 7" / "7", letter gauge "F" / "q". */
+function parseDrillSize(raw) {
+  const s = String(raw || "").trim().toLowerCase();
+  if (!s) return null;
+  let m;
+  if ((m = s.match(/^([\d.]+)\s*mm$/)) || (m = s.match(/^([\d.]+)\s*m$/))) {
+    const mm = parseFloat(m[1]);
+    return Number.isFinite(mm) && mm > 0 ? { dia: mm / IN_MM, label: fmt(mm, 2) + " mm", metric: true } : null;
+  }
+  if ((m = s.match(/^(\d+)\s*\/\s*(\d+)$/))) {
+    const num = parseInt(m[1]), den = parseInt(m[2]);
+    return den > 0 ? { dia: num / den, label: num + "/" + den + '"' } : null;
+  }
+  if (/^[a-z]$/.test(s) && LETTER_DRILLS[s.toUpperCase()]) {
+    return { dia: LETTER_DRILLS[s.toUpperCase()], label: s.toUpperCase() + " drill" };
+  }
+  if ((m = s.match(/^(?:#|no\.?\s*)?(\d{1,2})$/)) && !s.includes(".")) {
+    const n = parseInt(m[1]);
+    if (n >= 1 && n <= 80 && NUMBER_DRILLS[n]) return { dia: NUMBER_DRILLS[n], label: "#" + n + " drill" };
+  }
+  if ((m = s.match(/^\.?\d*\.?\d+$/))) {
+    const d = parseFloat(s);
+    return Number.isFinite(d) && d > 0 ? { dia: d, label: fmt(d, 4) + '"' } : null;
+  }
+  return null;
+}
 
 // ISO 513 material-class colors (letter is standardized; sub-numbers are brand styling)
 const ISO_COLORS = { P: "#1B5FAA", M: "#D9A400", K: "#C0392B", N: "#1E8F4E", S: "#C96A1E", H: "#6E7B8A" };
@@ -572,6 +609,80 @@ function Chip({ active, onClick, children }) {
   return <button className={"chip" + (active ? " chip-on" : "")} onClick={onClick}>{children}</button>;
 }
 
+/* Dropdown that can show icons/colors per row — native <option> can't hold markup.
+   options: [{ value, icon?, label, sub?, text }] where `text` is the plain-text
+   fallback used for the closed button and type-ahead. */
+function IconSelect({ value, onChange, options, placeholder = "— select —", disabled }) {
+  const [open, setOpen] = useState(false);
+  const [hi, setHi] = useState(0); // keyboard-highlighted row
+  const wrapRef = useRef(null);
+  const listRef = useRef(null);
+  const cur = options.find((o) => o.value === value) || null;
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocDown = (e) => { if (!wrapRef.current?.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onDocDown);
+    return () => document.removeEventListener("mousedown", onDocDown);
+  }, [open]);
+  useEffect(() => {
+    if (open) setHi(Math.max(0, options.findIndex((o) => o.value === value)));
+  }, [open]); // eslint-disable-line
+  useEffect(() => {
+    if (open) listRef.current?.querySelector(".isel-opt.hi")?.scrollIntoView({ block: "nearest" });
+  }, [hi, open]);
+
+  /* Field wraps children in a <label>; clicking a non-interactive element inside a
+     label makes the browser forward a synthetic click to the label's control (this
+     button), which would instantly re-toggle it. Making the trigger and every option
+     real <button>s (interactive content) exempts them from that forwarding per spec. */
+  const pick = (v) => { onChange(v); setOpen(false); };
+  const onKeyDown = (e) => {
+    if (!open && (e.key === "Enter" || e.key === " " || e.key === "ArrowDown")) { e.preventDefault(); setOpen(true); return; }
+    if (!open) return;
+    if (e.key === "Escape") { setOpen(false); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); setHi((i) => Math.min(i + 1, options.length - 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setHi((i) => Math.max(i - 1, 0)); }
+    else if (e.key === "Enter") { e.preventDefault(); if (options[hi]) pick(options[hi].value); }
+    else if (e.key.length === 1) {
+      const q = e.key.toLowerCase();
+      const i = options.findIndex((o, j) => j > hi && (o.text || "").toLowerCase().startsWith(q));
+      const k = i >= 0 ? i : options.findIndex((o) => (o.text || "").toLowerCase().startsWith(q));
+      if (k >= 0) setHi(k);
+    }
+  };
+
+  return (
+    <div className={"isel" + (open ? " open" : "")} ref={wrapRef}>
+      <button type="button" className="num isel-btn" disabled={disabled} onKeyDown={onKeyDown}
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="listbox" aria-expanded={open}>
+        <span className="isel-cur">
+          {cur?.icon}
+          <span className="isel-txt">{cur ? cur.label : placeholder}</span>
+          {cur?.sub && <span className="dim isel-sub">{cur.sub}</span>}
+        </span>
+        <span className="isel-caret" aria-hidden="true">▾</span>
+      </button>
+      {open && (
+        <div className="isel-list" role="listbox" ref={listRef} onKeyDown={onKeyDown} tabIndex={-1}>
+          {options.map((o, i) => (
+            <button type="button" key={o.value} role="option" aria-selected={o.value === value}
+              className={"isel-opt" + (i === hi ? " hi" : "") + (o.value === value ? " sel" : "")}
+              onMouseEnter={() => setHi(i)} onClick={() => pick(o.value)}>
+              {o.icon}
+              <span className="isel-opt-txt">
+                <span>{o.label}</span>
+                {o.sub && <span className="dim">{o.sub}</span>}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ============================================================
    APP
    ============================================================ */
@@ -1033,6 +1144,7 @@ function Tools({ tools, setTools, metric }) {
             pitch: base.pitch ?? t.pitch_in ?? null,
             metricTool: base.metricTool ?? !!t.metric_callout,
             cutting, source: Object.keys(cutting).length ? "manufacturer" : (existing ? existing.source : "lookup-no-data"),
+            sources: (res.sources && res.sources.length ? res.sources : base.sources) || [],
             notes: res.notes || base.notes || "",
           };
           setCandidates((p) => [...p.filter((c) => c.tool.id !== merged.id), { tool: merged, meta: { confidence: res.confidence, sources: res.sources || [], noData: !Object.keys(cutting).length } }]);
@@ -1373,7 +1485,7 @@ function ToolEditor({ tool, heading, sub, sources, onSave, onCancel, metric }) {
         Metric tool — callouts show in mm (8.5 mm drill, M10×1.5) but feeds &amp; speeds stay in your programming units
       </label>
       {t.notes && <p className="hint">{t.notes}</p>}
-      {sources?.length > 0 && <p className="hint dim">Sources: {sources.slice(0, 3).map((s, i) => <a key={i} href={s} target="_blank" rel="noreferrer">[{i + 1}]</a>)}</p>}
+      {(sources?.length ? sources : t.sources)?.length > 0 && <p className="hint dim">Sources: {(sources?.length ? sources : t.sources).slice(0, 4).map((s, i) => <a key={i} href={s} target="_blank" rel="noreferrer">[{i + 1}]</a>)}</p>}
 
       <button className="btn sm" onClick={() => setShowGroups(!showGroups)}>{showGroups ? "Hide" : "Show"} cutting data by material group</button>
       {showGroups && (
@@ -1426,9 +1538,23 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
   const [fData, setFData] = useState("all");
   const [presetName, setPresetName] = useState("");
   const skipSeed = useRef(false); // set while applying a preset so the reseed effect doesn't clobber it
+  // "quick tool": an unsaved tool spun up from just a type + size (e.g. a drill by number/letter/decimal)
+  const [useQuick, setUseQuick] = useState(false);
+  const [quick, setQuick] = useState({ type: "drill", size: "", flutes: 2 });
 
   const machine = machines.find((m) => m.id === machineId) || null;
-  const tool = tools.find((t) => t.id === toolId) || null;
+  const quickParsed = useMemo(() => parseDrillSize(quick.size), [quick.size]);
+  const quickTool = useMemo(() => {
+    if (!useQuick || !quickParsed) return null;
+    return {
+      id: "__quick", brand: "", pn: "", series: "", name: `Quick ${TOOL_TYPES[quick.type].toLowerCase()}`,
+      type: quick.type, dia: quickParsed.dia, flutes: quick.type === "drill" ? 2 : Math.max(1, quick.flutes || 2),
+      coating: "", loc: null, angle: quick.type === "chamfer_mill" ? 90 : null, tipDia: 0, pitch: null,
+      metricTool: !!quickParsed.metric, cutting: {}, source: "quick", notes: "", quickLabel: quickParsed.label,
+    };
+  }, [useQuick, quickParsed, quick.type, quick.flutes]);
+  const tool = quickTool || tools.find((t) => t.id === toolId) || null;
+  const toolKey = quickTool ? `q:${quick.type}:${quickTool.dia}` : toolId; // drives the seed effects
   const configs = contCurves(machine);
   const effCurveId = configs.some((c) => c.id === curveId) ? curveId : (configs[0]?.id || "");
 
@@ -1443,7 +1569,7 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
     (fData === "all" || (fData === "mfg" ? hasMfgData(t) : !hasMfgData(t)))
   ).sort((a, b) => a.dia - b.dia || (a.brand || "").localeCompare(b.brand || "")), [tools, group, fType, fBrand, fDia, fData]);
   // keep a selected tool visible in the dropdown even if the filters no longer match it
-  const toolOptions = tool && !filteredTools.some((t) => t.id === tool.id) ? [tool, ...filteredTools] : filteredTools;
+  const toolOptions = tool && !quickTool && !filteredTools.some((t) => t.id === tool.id) ? [tool, ...filteredTools] : filteredTools;
 
   // pick sensible default op per tool type
   useEffect(() => {
@@ -1453,7 +1579,7 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
     else if (tool.type === "tap") setOp("tap");
     else if (op === "drill" || op === "chamfer" || op === "tap") setOp("adaptive");
     if (tool.type !== "ball_endmill" && op === "finish3d") setOp("side");
-  }, [toolId]); // eslint-disable-line
+  }, [toolKey]); // eslint-disable-line
 
   // reseed on tool / material / mode change (skipped while a preset is being applied)
   useEffect(() => {
@@ -1473,7 +1599,7 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
       else if (op === "slot") { setAe(tool.dia); setAp(+(tool.dia * 0.5).toFixed(4)); }
       else { setAe(+(tool.dia * 0.25).toFixed(4)); setAp(+(tool.dia * 1).toFixed(4)); }
     }
-  }, [toolId, group, mode, op]); // eslint-disable-line
+  }, [toolKey, group, mode, op]); // eslint-disable-line
 
   const result = useMemo(() => {
     if (!tool) return null;
@@ -1530,18 +1656,23 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
       <div className="panel">
         <div className="sel-row">
           <Field label="Machine">
-            <select className="num" value={machineId} onChange={(e) => { setMachineId(e.target.value); setCurveId(""); }}>
-              <option value="">— no machine (no RPM clamp) —</option>
-              {machines.map((m) => <option key={m.id} value={m.id}>{m.name} · {fmt(m.maxRpm, 0)} RPM</option>)}
-            </select>
+            <IconSelect value={machineId} onChange={(v) => { setMachineId(v); setCurveId(""); }}
+              placeholder="— no machine (no RPM clamp) —"
+              options={[
+                { value: "", label: "— no machine (no RPM clamp) —", text: "no machine" },
+                ...machines.map((m) => ({
+                  value: m.id, icon: <BrandIcon name={m.name} />, label: m.name,
+                  sub: `${fmt(m.maxRpm, 0)} RPM`, text: m.name,
+                })),
+              ]} />
           </Field>
           <Field label="Material">
-            <div className="mat-wrap">
-              <i className="dot lg" style={{ background: groupColor(group) }} title={"ISO " + group[0]} />
-              <select className="num" value={group} onChange={(e) => setGroup(e.target.value)}>
-                {Object.keys(GROUPS).map((k) => <option key={k} value={k}>{GROUPS[k].label} — {GROUPS[k].ex}</option>)}
-              </select>
-            </div>
+            <IconSelect value={group} onChange={setGroup}
+              options={Object.keys(GROUPS).map((k) => ({
+                value: k,
+                icon: <i className="dot lg" style={{ background: groupColor(k) }} title={"ISO " + k[0]} />,
+                label: GROUPS[k].label, sub: GROUPS[k].ex, text: GROUPS[k].label,
+              }))} />
           </Field>
         </div>
         {configs.length > 1 && (
@@ -1581,15 +1712,44 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
         )}
         <div className="sel-row">
           <Field label={`Tool — ${filteredTools.length} of ${tools.length} match ${group}` + (fType !== "all" || fBrand !== "all" || fDia !== "all" || fData !== "all" ? " + filters" : "")}>
-            <select className="num" value={toolId} onChange={(e) => setToolId(e.target.value)}>
-              <option value="">— select a tool —</option>
-              {toolOptions.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {toolLabel(t, metric)} · {t.flutes}FL {TOOL_TYPES[t.type]}{hasMfgData(t) ? "" : " · generic"}{!canCut(t, group) ? ` · not rated for ${group}` : ""}
-                </option>
-              ))}
-            </select>
+            <IconSelect value={quickTool ? "" : toolId} onChange={(v) => { setToolId(v); setUseQuick(false); }} placeholder={quickTool ? "— using quick tool below —" : "— select a tool —"}
+              options={[
+                { value: "", label: "— select a tool —", text: "select a tool" },
+                ...toolOptions.map((t) => ({
+                  value: t.id,
+                  icon: <span className="isel-icons"><BrandIcon name={t.brand} /><TypeIcon type={t.type} size={17} /></span>,
+                  label: toolLabel(t, metric),
+                  sub: `${t.flutes}FL ${TOOL_TYPES[t.type]}${t.brand ? " · " + t.brand : ""}${hasMfgData(t) ? "" : " · generic"}${!canCut(t, group) ? ` · not rated for ${group}` : ""}`,
+                  text: toolLabel(t, metric),
+                })),
+              ]} />
           </Field>
+        </div>
+        <div className="quick-tool">
+          <button className="linky" onClick={() => { setUseQuick((q) => !q); if (!useQuick) setToolId(""); }}>
+            {useQuick ? "× Close quick tool" : "＋ Quick tool by size — drill or end mill, no saving"}
+          </button>
+          {useQuick && (
+            <div className="quick-row">
+              <select className="num auto" value={quick.type} onChange={(e) => setQuick((q) => ({ ...q, type: e.target.value }))}>
+                <option value="drill">Drill</option>
+                <option value="square_endmill">Square end mill</option>
+                <option value="ball_endmill">Ball end mill</option>
+              </select>
+              <input className="num quick-size" placeholder="size: 1/4, .201, #7, F, 8.5mm" value={quick.size}
+                onChange={(e) => setQuick((q) => ({ ...q, size: e.target.value }))} autoFocus />
+              {quick.type !== "drill" && (
+                <input className="num quick-fl" type="number" min="1" value={quick.flutes} title="flutes"
+                  onChange={(e) => setQuick((q) => ({ ...q, flutes: parseInt(e.target.value) || 1 }))} />
+              )}
+              <span className={"quick-resolved" + (quick.size && !quickParsed ? " bad" : "")}>
+                {quick.size ? (quickParsed
+                  ? `→ ${quickParsed.label} · Ø${diaLabel(quickParsed.dia, metric)}`
+                  : "unrecognized — try 1/4, .201, #7, F, or 8.5mm")
+                  : "number (#7), letter (F), fraction (1/4), decimal (.201), or metric (8.5mm)"}
+              </span>
+            </div>
+          )}
         </div>
         {tool && !canCut(tool, group) && (
           <div className="notice amber">This tool has manufacturer data but none for {group} — running generic {group} tables. Double-check the geometry/coating actually suits this material (aluminum-specific tools in steel = bad time).</div>
@@ -1623,7 +1783,17 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
                 <span className={"pill " + (seedSrc === "manufacturer" ? "mfg" : "gen")}>
                   {seedSrc === "manufacturer" ? "seeded from manufacturer data" : "seeded from generic tables"}
                 </span>
+                {quickTool && <span className="pill gen">quick tool · Ø{diaLabel(quickTool.dia, metric)}{quickTool.quickLabel ? ` (${quickTool.quickLabel})` : ""}</span>}
               </div>
+              {hasMfgData(tool) && tool.sources?.length > 0 && (
+                <div className="src-cite">
+                  <span className="src-label">Manufacturer data cited from</span>
+                  {tool.sources.slice(0, 4).map((s, i) => {
+                    let host = s; try { host = new URL(s).hostname.replace(/^www\./, ""); } catch { /* keep raw */ }
+                    return <a key={i} className="src-link" href={s} target="_blank" rel="noreferrer" title={s}>{host}</a>;
+                  })}
+                </div>
+              )}
             </div>
 
             <div className="grid-form">
@@ -1676,20 +1846,24 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
             {op === "adaptive" && !isDrill && (
               <p className="hint">Adaptive uses <strong>optimal load</strong> (Fusion's term) = constant radial engagement. Feed is chip-thinning compensated to hold your target chip. Conventional side milling uses plain <strong>stepover</strong> + fz because engagement spikes in corners.</p>
             )}
-            <div className="preset-bar">
-              <span className="chip-label">Presets</span>
-              {(tool.presets || []).map((p) => (
-                <span key={p.id} className="preset-chip">
-                  <button className="chip" onClick={() => applyPreset(p)}
-                    title={p.snap ? `${fmt(p.snap.rpm, 0)} RPM · ${metric ? fmt(p.snap.feed * IN_MM, 0) + " mm/min" : fmt(p.snap.feed, 1) + " ipm"} · ${fmt(p.snap.hp, 2)} HP when saved` : "Load this setup"}>{p.name}</button>
-                  <button className="preset-x" onClick={() => deletePreset(p.id)} title="Delete preset">×</button>
-                </span>
-              ))}
-              {(tool.presets || []).length === 0 && <span className="dim">none yet for this tool — dial in a cut, name it, save it</span>}
-              <input className="num txt preset-name" placeholder="Name this setup…" value={presetName}
-                onChange={(e) => setPresetName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && savePreset()} />
-              <button className="btn sm" disabled={!presetName.trim()} onClick={savePreset} title="Save the current machine, material, and cut parameters to this tool">Save preset</button>
-            </div>
+            {quickTool ? (
+              <p className="hint dim" style={{ marginTop: 10 }}>Quick tools aren't saved, so presets are off. Add it to your library from the Tools tab to keep it and save presets.</p>
+            ) : (
+              <div className="preset-bar">
+                <span className="chip-label">Presets</span>
+                {(tool.presets || []).map((p) => (
+                  <span key={p.id} className="preset-chip">
+                    <button className="chip" onClick={() => applyPreset(p)}
+                      title={p.snap ? `${fmt(p.snap.rpm, 0)} RPM · ${metric ? fmt(p.snap.feed * IN_MM, 0) + " mm/min" : fmt(p.snap.feed, 1) + " ipm"} · ${fmt(p.snap.hp, 2)} HP when saved` : "Load this setup"}>{p.name}</button>
+                    <button className="preset-x" onClick={() => deletePreset(p.id)} title="Delete preset">×</button>
+                  </span>
+                ))}
+                {(tool.presets || []).length === 0 && <span className="dim">none yet for this tool — dial in a cut, name it, save it</span>}
+                <input className="num txt preset-name" placeholder="Name this setup…" value={presetName}
+                  onChange={(e) => setPresetName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && savePreset()} />
+                <button className="btn sm" disabled={!presetName.trim()} onClick={savePreset} title="Save the current machine, material, and cut parameters to this tool">Save preset</button>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -1819,8 +1993,28 @@ select.num{font-family:'Archivo',sans-serif}
 .pill.grp{margin-right:4px;font-weight:600}
 .dot{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:baseline}
 .dot.lg{width:15px;height:15px;border-radius:4px;flex:none;margin:0}
-.mat-wrap{display:flex;align-items:center;gap:8px}
-.mat-wrap select{flex:1;min-width:0}
+
+/* IconSelect — dropdown that can carry brand favicons / ISO color squares,
+   which a native <select> can't render inside its <option>s */
+.isel{position:relative}
+.isel-btn{display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;cursor:pointer;font-family:'Archivo',sans-serif}
+.isel-btn:disabled{cursor:default}
+.isel-cur{display:flex;align-items:center;gap:0;min-width:0;flex:1}
+.isel-cur .bicon,.isel-cur .ticon,.isel-cur .dot{flex:none}
+.isel-txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.isel-cur .dot.lg{margin-right:8px}
+.isel-sub{margin-left:7px;white-space:nowrap}
+.isel-caret{color:var(--label);font-size:11px;flex:none}
+.isel.open .isel-btn{border-color:var(--accent)}
+.isel-list{position:absolute;z-index:40;top:calc(100% + 4px);left:0;right:0;max-height:340px;overflow-y:auto;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.13);padding:4px}
+.isel-opt{display:flex;align-items:center;gap:0;width:100%;text-align:left;border:0;background:transparent;font:inherit;color:var(--ink);padding:7px 9px;border-radius:6px;cursor:pointer;font-size:13.5px}
+.isel-opt .dot.lg{margin-right:9px}
+.isel-opt.hi{background:var(--info-bg)}
+.isel-opt.sel{font-weight:600}
+.isel-opt-txt{display:flex;flex-direction:column;gap:1px;min-width:0}
+.isel-opt-txt>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.isel-icons{display:inline-flex;align-items:center;flex:none}
+.isel-icons .ticon{margin-right:7px}
 .ck{display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--label);margin:0 0 12px;flex-wrap:wrap;cursor:pointer}
 .ck input{accent-color:var(--accent)}
 .iso-legend{display:inline-flex;gap:10px;margin-left:10px;font-family:'IBM Plex Mono',monospace;font-size:11px}
@@ -1904,6 +2098,21 @@ tr.row-sel td{background:#FBF4E6}
 .curve-meta-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 
 /* calculation presets saved on a tool */
+/* quick tool by size */
+.quick-tool{margin:-4px 0 12px}
+.quick-tool .linky{font-size:12.5px}
+.quick-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px;padding:10px;border:1px solid var(--line);border-radius:8px;background:#fff}
+.quick-size{width:180px;flex:none}
+.quick-fl{width:64px;flex:none}
+.quick-resolved{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--mfg)}
+.quick-resolved.bad{color:var(--red)}
+
+/* manufacturer-data source citation in the calculator */
+.src-cite{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
+.src-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--label)}
+.src-link{font-size:12px;font-family:'IBM Plex Mono',monospace;color:var(--accent-ink);background:var(--info-bg);border:1px solid var(--line);border-radius:99px;padding:2px 9px;text-decoration:none;white-space:nowrap}
+.src-link:hover{border-color:var(--accent);text-decoration:underline}
+
 .preset-bar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;border-top:1px dashed var(--line);padding-top:10px;margin-top:4px}
 .preset-chip{display:inline-flex;align-items:center}
 .preset-chip .chip{border-radius:99px 0 0 99px;border-right:0}
