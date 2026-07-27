@@ -158,7 +158,10 @@ function diaLabel(d, metric) {
   if (n > 0 && Math.abs(d * 64 - n) < 0.02) {
     let num = n, den = 64;
     while (num % 2 === 0 && den > 1) { num /= 2; den /= 2; }
-    return den === 1 ? num + '"' : num + "/" + den + '"';
+    if (den === 1) return num + '"';
+    // shop notation: mixed numbers over 1", never improper fractions (1-1/4", not 5/4")
+    const whole = Math.floor(num / den);
+    return (whole ? whole + "-" : "") + (num - whole * den) + "/" + den + '"';
   }
   return fmt(d, 4) + '"';
 }
@@ -517,6 +520,11 @@ function computeCut({ tool, machine, curveId, group, op, mode, sfm, ae, ap, targ
     out.info.push(`Scallop height at ${fmt(ae, 4)}" stepover: ${fmt(scallop * 1000, 2)} thou (${fmt(scallop * IN_MM * 1000, 1)} µm)`);
   }
 
+  // geometry hard limits — these aren't preferences, the tool physically can't do it
+  if (ae > D * 1.001) out.warnings.push({ level: "red", msg: `Radial engagement ${fmt(ae, 4)}" is wider than the cutter itself (Ø${fmt(D, 4)}") — cap it at the diameter.` });
+  const locLim = Number.isFinite(tool.loc) && tool.loc > 0 ? tool.loc : null;
+  if (locLim && ap > locLim * 1.001) out.warnings.push({ level: "red", msg: `Stepdown ${fmt(ap, 4)}" is deeper than the flute length (LOC ${fmt(locLim, 4)}") — the shank would be rubbing the wall.` });
+
   // engagement sanity
   if (op === "slot" && ap > D * 1.05) out.warnings.push({ level: "amber", msg: `Slotting deeper than 1×Ø (${fmt(D, 3)}") in one pass — consider multiple stepdowns.` });
   if (op === "side" && ae > D * 0.55) out.warnings.push({ level: "amber", msg: `Radial engagement > 0.5×Ø in conventional side milling — heavy cut, watch deflection.` });
@@ -609,6 +617,55 @@ function NumInput({ value, onChange, step, min, disabled, metric, isLength, isFe
 
 function Chip({ active, onClick, children }) {
   return <button className={"chip" + (active ? " chip-on" : "")} onClick={onClick}>{children}</button>;
+}
+
+/* Capacity meter — shows a cut parameter as a fraction of the ceiling the tool's
+   own geometry allows, and drags to set it. Same green/amber/red grammar as the
+   spindle-load bar, so "how much tool am I using" reads at a glance while the
+   number input above keeps full precision. It's a <button> so the wrapping Field
+   <label> doesn't forward clicks into the number input. */
+function RatioBar({ value, max, onChange, limitLabel, assumed }) {
+  const trackRef = useRef(null);
+  const usable = Number.isFinite(max) && max > 0;
+  const pct = usable && Number.isFinite(value) ? (value / max) * 100 : 0;
+  const level = pct > 100 ? "r" : pct > 85 ? "a" : "g";
+
+  const setFromX = (clientX) => {
+    const el = trackRef.current;
+    if (!el || !usable) return;
+    const r = el.getBoundingClientRect();
+    const f = Math.min(Math.max((clientX - r.left) / r.width, 0), 1);
+    onChange(+(f * max).toFixed(5));
+  };
+  const onPointerDown = (e) => {
+    if (!usable) return;
+    e.preventDefault();
+    setFromX(e.clientX);
+    const move = (ev) => setFromX(ev.clientX);
+    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  const onKeyDown = (e) => {
+    if (!usable) return;
+    const step = max / 40;
+    if (e.key === "ArrowLeft" || e.key === "ArrowDown") { e.preventDefault(); onChange(+Math.max(0, (value || 0) - step).toFixed(5)); }
+    if (e.key === "ArrowRight" || e.key === "ArrowUp") { e.preventDefault(); onChange(+Math.min(max, (value || 0) + step).toFixed(5)); }
+  };
+
+  return (
+    <div className="ratio">
+      <button type="button" className="ratio-track" ref={trackRef} onPointerDown={onPointerDown} onKeyDown={onKeyDown}
+        role="slider" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100} aria-label={`Percent of ${limitLabel}`}
+        title={`Drag to set — ceiling is ${limitLabel}${assumed ? " (assumed)" : ""}`}>
+        <i className={level} style={{ width: Math.min(pct, 100) + "%" }} />
+      </button>
+      <span className="ratio-meta">
+        <span className={"ratio-pct " + level}>{fmt(pct, 0)}%</span>
+        <span className="dim">of {limitLabel}{assumed ? "*" : ""}</span>
+      </span>
+    </div>
+  );
 }
 
 /* Dropdown that can show icons/colors per row — native <option> can't hold markup.
@@ -1172,6 +1229,7 @@ function Tools({ tools, setTools, metric }) {
 
   const queuedIds = new Set(queue.filter((j) => j.kind === "enrich").map((j) => j.id));
   const activeId = active?.kind === "enrich" ? active.id : null;
+  const candidateIds = new Set(candidates.map((c) => c.tool.id)); // results waiting in the review stack
   const pendingCount = queue.length + (active ? 1 : 0);
   const jobLabel = (j) => {
     if (!j) return "";
@@ -1324,13 +1382,14 @@ function Tools({ tools, setTools, metric }) {
       {pendingCount > 0 && (
         <div className="notice info">
           <div className="prog-row">
-            <span>Searching the web for <strong>{jobLabel(active)}</strong>{queue.length > 0 ? ` · ${queue.length} more queued` : ""} — safe to switch tabs, this keeps running. Results land below for review.</span>
+            <span>Searching the web for <strong>{jobLabel(active)}</strong>{queue.length > 0 ? ` · ${queue.length} more queued` : ""} — safe to switch tabs, this keeps running.{activeId ? " Live progress is on its row below." : " Results land below for review."}</span>
             <span className="mono dim">{elapsed}{batch.total > 1 ? ` · ${batch.done}/${batch.total}` : ""}</span>
           </div>
-          {active && <div className="milestone">{progress || "Contacting the AI…"}</div>}
+          {/* a row lookup shows its own milestone + bar inline; only new-tool lookups need them here */}
+          {active && !activeId && <div className="milestone">{progress || "Contacting the AI…"}</div>}
           {batch.total > 1
             ? <div className="prog"><i style={{ width: (100 * batch.done / batch.total).toFixed(1) + "%" }} /></div>
-            : <div className="prog indet"><i /></div>}
+            : !activeId && <div className="prog indet"><i /></div>}
         </div>
       )}
       {pendingCount === 0 && batch.total > 1 && batch.done >= batch.total && (
@@ -1432,7 +1491,7 @@ function Tools({ tools, setTools, metric }) {
             </tr></thead>
             <tbody>
               {visible.map((t) => {
-                const state = activeId === t.id ? "active" : queuedIds.has(t.id) ? "queued" : "";
+                const state = activeId === t.id ? "active" : queuedIds.has(t.id) ? "queued" : candidateIds.has(t.id) ? "ready" : "";
                 const editing = editId === t.id;
                 return (
                 <React.Fragment key={t.id}>
@@ -1452,14 +1511,26 @@ function Tools({ tools, setTools, metric }) {
                         </span>))
                     : <span className="pill gen">generic</span>}</td>
                   <td className="row-actions">
-                    <button className={"btn sm" + (state ? " queued" : "")} disabled={!!state} onClick={() => enqueueEnrich(t)}
-                      title={state === "active" ? "Searching the web now…" : state === "queued" ? "Waiting in the lookup queue" : "Search the web for manufacturer cutting data"}>
-                      {state === "active" ? "Searching…" : state === "queued" ? "Queued" : "Look up"}
+                    <button className={"btn sm" + (state ? " queued" : "") + (state === "ready" ? " ready" : "")} disabled={!!state} onClick={() => enqueueEnrich(t)}
+                      title={state === "active" ? "Searching the web now…" : state === "queued" ? "Waiting in the lookup queue" : state === "ready" ? "Result is waiting in the review stack at the top of this page" : "Search the web for manufacturer cutting data"}>
+                      {state === "active" ? "Searching…" : state === "queued" ? "Queued" : state === "ready" ? "Review ready" : "Look up"}
                     </button>
                     <button className={"btn sm" + (editing ? " queued" : "")} onClick={() => setEditId(editing ? null : t.id)}>{editing ? "Editing" : "Edit"}</button>
                     <button className="btn sm danger" onClick={() => setTools((p) => p.filter((x) => x.id !== t.id))}>Delete</button>
                   </td>
                 </tr>
+                {state === "active" && (
+                  /* live progress rides on the row being looked up, not just the notice up top */
+                  <tr className="lookup-row">
+                    <td colSpan={9}>
+                      <div className="row-prog-top">
+                        <span className="milestone">{progress || "Contacting the AI…"}</span>
+                        <span className="mono dim">{elapsed}</span>
+                      </div>
+                      <div className="prog indet"><i /></div>
+                    </td>
+                  </tr>
+                )}
                 {editing && (
                   <tr className="edit-row">
                     <td colSpan={9}>
@@ -1692,6 +1763,27 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
   const feedDisp = (v) => metric ? fmt(v * IN_MM, 0) + " mm/min" : fmt(v, 1) + " in/min";
   const thouDisp = (v, d = 5) => metric ? fmt(v * IN_MM, 3) + " mm" : fmt(v, d) + '"';
 
+  /* ceilings the tool's own geometry imposes: radial can't exceed the cutter Ø,
+     axial can't exceed the flute length (past that the shank is in the cut) */
+  const geo = useMemo(() => {
+    if (!tool || isDrill || isTap) return null;
+    const D = tool.dia;
+    const hasLoc = Number.isFinite(tool.loc) && tool.loc > 0;
+    let apMax = hasLoc ? tool.loc : D * 2;
+    let apLabel = hasLoc ? `LOC ${diaLabel(tool.loc, metric)}` : `2×Ø (no LOC on file)`;
+    let apAssumed = !hasLoc;
+    if (isChamfer) {
+      const half = (((tool.angle || 90) / 2) * Math.PI) / 180;
+      apMax = ((D - (tool.tipDia || 0)) / 2) / Math.tan(half);
+      apLabel = `max chamfer depth ${diaLabel(apMax, metric)}`;
+      apAssumed = false;
+    }
+    return {
+      ae: { max: D, label: `Ø ${diaLabel(D, metric)}`, assumed: false },
+      ap: { max: apMax, label: apLabel, assumed: apAssumed },
+    };
+  }, [tool, metric, isChamfer, isDrill, isTap]);
+
   return (
     <section className="calc">
       <div className="panel">
@@ -1848,6 +1940,7 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
                 <>
                   <Field label="Chamfer depth (axial)" unit={lenU}>
                     <NumInput value={ap} onChange={setAp} metric={metric} isLength />
+                    {geo && <RatioBar value={ap} max={geo.ap.max} onChange={setAp} limitLabel={geo.ap.label} />}
                   </Field>
                   <Field label="Feed per tooth (fz)" unit={lenU}>
                     <NumInput value={fz} onChange={setFz} metric={metric} isFeedPerTooth digits={metric ? 3 : 5} />
@@ -1863,9 +1956,11 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
                 <>
                   <Field label={op === "adaptive" ? "Optimal load (radial, ae)" : op === "slot" ? "Slot width (= Ø)" : "Stepover (radial, ae)"} unit={lenU}>
                     <NumInput value={op === "slot" ? tool.dia : ae} onChange={setAe} metric={metric} isLength disabled={op === "slot"} />
+                    {geo && op !== "slot" && <RatioBar value={ae} max={geo.ae.max} onChange={setAe} limitLabel={geo.ae.label} />}
                   </Field>
                   <Field label="Stepdown (axial, ap)" unit={lenU}>
                     <NumInput value={ap} onChange={setAp} metric={metric} isLength />
+                    {geo && <RatioBar value={ap} max={geo.ap.max} onChange={setAp} limitLabel={geo.ap.label} assumed={geo.ap.assumed} />}
                   </Field>
                   {op === "adaptive" ? (
                     <Field label="Target chip thickness" unit={lenU}>
@@ -2069,6 +2164,12 @@ select.num{font-family:'Archivo',sans-serif}
 @keyframes prog-slide{0%{margin-left:-38%}100%{margin-left:100%}}
 .milestone{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--accent-ink);margin-top:6px}
 .bulkbar{display:flex;gap:8px;align-items:center;background:var(--info-bg);border:1px solid var(--line);border-radius:8px;padding:7px 12px;margin-bottom:8px}
+/* live lookup progress attached to the bottom of the row being looked up */
+.lookup-row>td{padding:0 8px 7px;border-bottom:1px solid var(--line);background:#FBF4E6}
+.row-prog-top{display:flex;justify-content:space-between;gap:12px;align-items:baseline;padding:1px 0 5px}
+.row-prog-top .milestone{margin:0}
+.btn.sm.ready{color:var(--mfg);border-color:#BFD8C8;background:#EDF6F0;opacity:1}
+
 /* inline tool editing: the editor opens in a full-width row right under the tool */
 tr.row-editing td{background:#FBF4E6}
 .edit-row>td{padding:0 0 6px;background:transparent;border-bottom:1px solid var(--line)}
@@ -2147,6 +2248,21 @@ tr.row-sel td{background:#FBF4E6}
 .curve-meta-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 
 /* calculation presets saved on a tool */
+/* capacity meter under a cut-parameter field — % of the tool's geometric ceiling */
+.ratio{display:flex;align-items:center;gap:8px;margin-top:6px}
+.ratio-track{position:relative;flex:1;min-width:0;height:9px;padding:0;border:1px solid var(--line);border-radius:99px;background:#E4E7E1;overflow:hidden;cursor:ew-resize;display:block;appearance:none}
+.ratio-track:hover{border-color:var(--ink)}
+.ratio-track:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.ratio-track i{display:block;height:100%;border-radius:99px;transition:width .12s ease}
+.ratio-track i.g{background:var(--mfg)}
+.ratio-track i.a{background:#C08A12}
+.ratio-track i.r{background:var(--red)}
+.ratio-meta{display:flex;gap:4px;align-items:baseline;font-family:'IBM Plex Mono',monospace;font-size:10.5px;white-space:nowrap;flex:none}
+.ratio-pct{font-weight:600}
+.ratio-pct.g{color:var(--mfg)}
+.ratio-pct.a{color:var(--amber)}
+.ratio-pct.r{color:var(--red)}
+
 /* quick tool by size */
 .quick-tool{margin:-4px 0 12px}
 .quick-tool .linky{font-size:12.5px}
