@@ -148,4 +148,10 @@ and tool-type glyphs embedded as MDI (Apache-2.0) SVG paths in `TYPE_ICON_PATHS`
   conversion notes, and the "don't invent groups / don't fill placeholder numbers" rules.
 - Worker CORS is `Access-Control-Allow-Origin: *` with no auth — the endpoint is an open
   proxy to a paid API.
+- Cost controls live in the Worker: web searches are hard-capped (`max_uses` for
+  Anthropic, `max_tool_calls` for OpenAI) — 6 for tool lookup, 8 for curve search;
+  OpenAI `reasoning.effort` defaults low (lookup) / medium (vision); default models are
+  `gpt-5.6` and `claude-sonnet-5` (not Opus). Override via the `SEARCH_MAX_USES`,
+  `OPENAI_EFFORT`, `OPENAI_MODEL`, `ANTHROPIC_MODEL` Worker vars in `wrangler.jsonc`.
+  Provider is auto-selected: OpenAI if `OPENAI_API_KEY` secret is set, else Anthropic.
 - `.tools` unzip uses `DecompressionStream("deflate-raw")` — browser-only, no polyfill.
