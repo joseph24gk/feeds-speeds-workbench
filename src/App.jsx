@@ -107,6 +107,8 @@ const BRAND_DOMAINS = {
   lakeshore: "lakeshorecarbide.com", maritool: "maritool.com", destiny: "destinytool.com",
   imco: "imcousa.com", amana: "amanatool.com", melin: "melintool.com", morse: "morsecuttingtools.com",
   onsrud: "onsrud.com", vortex: "vortextool.com",
+  // CAM software (the adaptive/dynamic toolpath is Fusion/Autodesk HSM's term)
+  fusion: "autodesk.com", autodesk: "autodesk.com",
   // machine tool brands
   haas: "haascnc.com", tormach: "tormach.com", mazak: "mazakusa.com", okuma: "okuma.com",
   dmg: "dmgmori.com", "mori seiki": "dmgmori.com", deckel: "dmgmori.com", maho: "dmgmori.com",
@@ -1766,7 +1768,7 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
               {isMill && (
                 <div className="chip-row">
                   <span className="chip-label">Operation</span>
-                  <Chip active={op === "adaptive"} onClick={() => setOp("adaptive")}>Adaptive / dynamic</Chip>
+                  <Chip active={op === "adaptive"} onClick={() => setOp("adaptive")}><BrandIcon name="fusion" size={14} />Adaptive / dynamic</Chip>
                   <Chip active={op === "side"} onClick={() => setOp("side")}>Side milling</Chip>
                   <Chip active={op === "slot"} onClick={() => setOp("slot")}>Slotting</Chip>
                   {tool.type === "ball_endmill" && <Chip active={op === "finish3d"} onClick={() => setOp("finish3d")}>3D finishing</Chip>}
@@ -2087,6 +2089,7 @@ tr.row-sel td{background:#FBF4E6}
 .ticon{vertical-align:-4px;margin-right:6px;color:var(--ink);opacity:.75}
 .chip .ticon{color:inherit;opacity:1;margin-right:5px;vertical-align:-3px}
 .chip-on .ticon{color:#fff}
+.chip .bicon{vertical-align:-2px;margin-right:5px}
 
 /* machine curve manager */
 .curve-list{display:flex;flex-direction:column;gap:6px;margin:2px 0 12px;padding:8px;border:1px solid var(--line);border-radius:8px;background:#fff}
