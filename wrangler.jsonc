@@ -4,8 +4,15 @@
   "main": "worker/index.js",
   "compatibility_date": "2026-07-20",
   "vars": {
+    // Provider is chosen in the Worker: OpenAI is used if OPENAI_API_KEY is set, else Anthropic.
+    // Set the API key as a secret, never here: npx wrangler secret put OPENAI_API_KEY
     "OPENAI_MODEL": "gpt-5.6",
-    "ANTHROPIC_MODEL": "claude-opus-4-8"
+    // Sonnet instead of Opus — far cheaper, still strong at web-search extraction + chart vision.
+    // Bump back to "claude-opus-5" only if you need the extra quality.
+    "ANTHROPIC_MODEL": "claude-sonnet-5"
+    // Optional global cost knobs (leave unset to use per-endpoint defaults):
+    //   "SEARCH_MAX_USES": "6"    hard-cap web searches (tool lookup already 6, curve search 8)
+    //   "OPENAI_EFFORT": "low"    reasoning depth low|medium|high (lookup already low, vision medium)
   },
   "observability": {
     "enabled": true

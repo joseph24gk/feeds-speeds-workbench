@@ -81,7 +81,7 @@ Group key: N=nonferrous (N1 wrought alum, N2 cast alum low-Si, N3 cast alum high
 
 Use inches internally: convert metric diameter, LOC, pitch, feed per tooth, and feed per rev into inches. Prefer manufacturer-published cutting data. Only include cutting groups the manufacturer actually publishes or clearly intends — do not interpolate or invent ranges for groups they don't rate the tool for. If you can identify the tool but not published cutting data, set found=true with an empty "cutting" array. If you cannot identify the tool at all, set found=false and leave the tool fields empty or null rather than filling in placeholder numbers.`;
 
-  const run = async (onProgress) => parseJsonOutput(await modelJson(env, { prompt, useWebSearch: true, onProgress }));
+  const run = async (onProgress) => parseJsonOutput(await modelJson(env, { prompt, useWebSearch: true, maxSearches: 6, effort: "low", onProgress }));
   if (streaming) return sseResponse(ctx, run);
   return json(await run());
 }
@@ -109,6 +109,7 @@ If no recognizable power/torque curve exists in the file, set found=false with e
   const text = await modelJson(env, {
     prompt,
     file: { filename, mimeType, fileData },
+    effort: "medium", // reading a chart accurately needs a bit more than "low"
   });
   return json(parseJsonOutput(text));
 }
@@ -147,7 +148,7 @@ Respond with ONLY a raw JSON object, no markdown fences, no preamble:
 
 Ground every curve in published data: an actual curve chart, or published torque/power figures at stated RPMs (e.g. "75 ft-lb at 1400 RPM, 30 HP peak, 8100 RPM max"). If you can only find a few published anchor points, return just those points and say so in the curve's notes rather than inventing a smooth curve. Do NOT fabricate numbers for a machine you cannot find data for — set found=false with an empty curves array instead. If the machine was sold with multiple factory spindle options (e.g. 8100 vs 12000 RPM, standard vs high-torque), pick the option matching the stated max RPM and note the assumption; if none matches, return the standard option.`;
 
-  const run = async (onProgress) => parseJsonOutput(await modelJson(env, { prompt, useWebSearch: true, maxTokens: 4000, onProgress }));
+  const run = async (onProgress) => parseJsonOutput(await modelJson(env, { prompt, useWebSearch: true, maxTokens: 4000, maxSearches: 8, effort: "medium", onProgress }));
   if (streaming) return sseResponse(ctx, run);
   return json(await run());
 }
@@ -256,10 +257,15 @@ async function openaiResponse(env, request) {
     max_output_tokens: request.maxTokens || 1600,
     input: [{ role: "user", content }],
     stream: true,
+    // reasoning tokens dominate cost on these models; low/medium is plenty for
+    // structured extraction. Override globally with the OPENAI_EFFORT Worker var.
+    reasoning: { effort: env.OPENAI_EFFORT || request.effort || "low" },
   };
   if (request.useWebSearch) {
     body.tools = [{ type: "web_search" }];
     body.tool_choice = "required";
+    // hard cap on tool calls — one runaway lookup did 37 web searches; each costs money
+    body.max_tool_calls = Number(env.SEARCH_MAX_USES) || request.maxSearches || 6;
   }
 
   const response = await fetch("https://api.openai.com/v1/responses", {
@@ -315,7 +321,8 @@ async function anthropicResponse(env, request) {
     stream: true,
   };
   if (request.useWebSearch) {
-    body.tools = [{ type: "web_search_20260209", name: "web_search" }];
+    // max_uses hard-caps web searches (each costs money — one lookup ran 37)
+    body.tools = [{ type: "web_search_20260209", name: "web_search", max_uses: Number(env.SEARCH_MAX_USES) || request.maxSearches || 6 }];
   }
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
