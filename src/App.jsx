@@ -252,6 +252,50 @@ const CURVE_UNITS = {
   nm: { label: "Torque (Nm)", conv: (y, rpm) => (y * rpm) / 7121 },
 };
 
+/* ---------------- lookup cost estimate ----------------
+   Priced from what lookups ACTUALLY used (the Worker reports searches + tokens),
+   not a guess. Rates are editable because they depend on your provider/plan;
+   defaults below are a starting point, not a quote. */
+const RATES_KEY = "fsw:rates:v1";
+const USAGE_KEY = "fsw:usage:v1";
+const DEFAULT_RATES = { inPerM: 2.5, outPerM: 15, perSearch: 0.01 }; // $/million tokens, $/web search
+/* fallback shape until real lookups are measured: capped searches + a typical payload */
+const ASSUMED_USAGE = { searches: 4, inputTokens: 25000, outputTokens: 1800 };
+
+function loadRates() {
+  try { return { ...DEFAULT_RATES, ...(JSON.parse(localStorage.getItem(RATES_KEY)) || {}) }; }
+  catch { return { ...DEFAULT_RATES }; }
+}
+function loadUsage() {
+  try {
+    const u = JSON.parse(localStorage.getItem(USAGE_KEY));
+    return u && u.n > 0 ? u : null;
+  } catch { return null; }
+}
+/* running total of observed usage so the estimate sharpens as you use the app */
+function recordUsage(u) {
+  if (!u || !Number.isFinite(u.inputTokens)) return;
+  const prev = loadUsage() || { n: 0, searches: 0, inputTokens: 0, outputTokens: 0 };
+  const next = {
+    n: prev.n + 1,
+    searches: prev.searches + (u.searches || 0),
+    inputTokens: prev.inputTokens + (u.inputTokens || 0),
+    outputTokens: prev.outputTokens + (u.outputTokens || 0),
+  };
+  try { localStorage.setItem(USAGE_KEY, JSON.stringify(next)); } catch { /* quota */ }
+  return next;
+}
+/* average cost of one lookup, in dollars */
+function lookupCost(rates, usage) {
+  const avg = usage && usage.n > 0
+    ? { searches: usage.searches / usage.n, inputTokens: usage.inputTokens / usage.n, outputTokens: usage.outputTokens / usage.n }
+    : ASSUMED_USAGE;
+  return avg.searches * rates.perSearch
+    + (avg.inputTokens / 1e6) * rates.inPerM
+    + (avg.outputTokens / 1e6) * rates.outPerM;
+}
+const money = (v) => (v < 0.01 ? "<$0.01" : "$" + v.toFixed(2));
+
 /* ---------------- storage ---------------- */
 const KEY = "fsw:data:v1";
 const API_BASE = (import.meta.env.VITE_API_BASE || localStorage.getItem("fsw:apiBase") || "").replace(/\/+$/, "");
@@ -1160,6 +1204,15 @@ function Tools({ tools, setTools, metric }) {
   const [sort, setSort] = useState({ k: "dia", d: 1 });
   const [batch, setBatch] = useState({ total: 0, done: 0 });
   const [progress, setProgress] = useState(""); // latest milestone from the Worker's SSE stream
+  const [rates, setRates] = useState(loadRates);
+  const [usage, setUsage] = useState(loadUsage);
+  const [showRates, setShowRates] = useState(false);
+  const perLookup = lookupCost(rates, usage);
+  const saveRates = (patch) => setRates((r) => {
+    const next = { ...r, ...patch };
+    try { localStorage.setItem(RATES_KEY, JSON.stringify(next)); } catch { /* quota */ }
+    return next;
+  });
   const fileRef = useRef(null);
   const toolsRef = useRef(tools);
   useEffect(() => { toolsRef.current = tools; }, [tools]);
@@ -1178,6 +1231,7 @@ function Tools({ tools, setTools, metric }) {
         const brand = (job.kind === "enrich" ? existing?.brand : job.brand) || "unknown brand";
         const pnq = job.kind === "enrich" ? (existing?.pn || existing?.name) : job.pn;
         const res = await lookupTool(brand, pnq, setProgress);
+        if (res._usage) { const u = recordUsage(res._usage); if (u) setUsage(u); }
         if (!res.found || !res.tool) {
           if (job.kind === "new") {
             setLookupErr(`Couldn't identify "${brand} ${pnq}" on the web. Enter it manually — generic tables will be used until you add numbers.`);
@@ -1468,11 +1522,47 @@ function Tools({ tools, setTools, metric }) {
               <option value="gen">Generic / physics</option>
             </select>
             <span className="dim">{visible.length} of {tools.length}</span>
+            <button className="linky cost-link" onClick={() => setShowRates((s) => !s)}
+              title="How the per-lookup cost estimate is calculated">
+              ~{money(perLookup)}/lookup{usage?.n ? ` · measured over ${usage.n}` : " · estimated"}
+            </button>
           </div>
+          {showRates && (
+            <div className="card rates-card">
+              <h3>Lookup cost — your rates</h3>
+              <p className="hint">
+                {usage?.n
+                  ? `Averaged from your last ${usage.n} lookup${usage.n > 1 ? "s" : ""}: ${fmt(usage.searches / usage.n, 1)} web searches, ${fmt(usage.inputTokens / usage.n, 0)} input + ${fmt(usage.outputTokens / usage.n, 0)} output tokens each.`
+                  : `No lookups measured yet, so this assumes ${ASSUMED_USAGE.searches} searches and ~${fmt(ASSUMED_USAGE.inputTokens, 0)} input tokens. It sharpens automatically once you run some.`}
+                {" "}Rates depend on your provider and plan — check your billing page and set them here.
+              </p>
+              <div className="grid-form">
+                <Field label="Input" unit="$/M tokens">
+                  <input className="num" type="number" step="0.01" min="0" value={rates.inPerM}
+                    onChange={(e) => saveRates({ inPerM: parseFloat(e.target.value) || 0 })} />
+                </Field>
+                <Field label="Output" unit="$/M tokens">
+                  <input className="num" type="number" step="0.01" min="0" value={rates.outPerM}
+                    onChange={(e) => saveRates({ outPerM: parseFloat(e.target.value) || 0 })} />
+                </Field>
+                <Field label="Per web search" unit="$">
+                  <input className="num" type="number" step="0.001" min="0" value={rates.perSearch}
+                    onChange={(e) => saveRates({ perSearch: parseFloat(e.target.value) || 0 })} />
+                </Field>
+              </div>
+              <div className="row-btns">
+                <button className="btn sm" onClick={() => setShowRates(false)}>Done</button>
+                <button className="btn sm" onClick={() => { try { localStorage.removeItem(USAGE_KEY); } catch { /* ignore */ } setUsage(null); }}
+                  title="Forget measured usage and go back to the assumed baseline">Reset measurements</button>
+              </div>
+            </div>
+          )}
           {sel.size > 0 && (
             <div className="bulkbar">
               <span className="strong">{sel.size} selected</span>
-              <button className="btn sm" onClick={bulkLookup}>Look up all</button>
+              <button className="btn sm" onClick={bulkLookup}>
+                Look up all <span className="cost-hint">≈{money(perLookup * selTools.filter((t) => activeId !== t.id && !queuedIds.has(t.id)).length)}</span>
+              </button>
               <button className="btn sm danger" onClick={bulkDelete}>Delete</button>
               <button className="btn sm" onClick={() => setSel(new Set())}>Clear</button>
             </div>
@@ -1513,7 +1603,7 @@ function Tools({ tools, setTools, metric }) {
                   <td className="row-actions">
                     <button className={"btn sm" + (state ? " queued" : "") + (state === "ready" ? " ready" : "")} disabled={!!state} onClick={() => enqueueEnrich(t)}
                       title={state === "active" ? "Searching the web now…" : state === "queued" ? "Waiting in the lookup queue" : state === "ready" ? "Result is waiting in the review stack at the top of this page" : "Search the web for manufacturer cutting data"}>
-                      {state === "active" ? "Searching…" : state === "queued" ? "Queued" : state === "ready" ? "Review ready" : "Look up"}
+                      {state === "active" ? "Searching…" : state === "queued" ? "Queued" : state === "ready" ? "Review ready" : <>Look up <span className="cost-hint">{money(perLookup)}</span></>}
                     </button>
                     <button className={"btn sm" + (editing ? " queued" : "")} onClick={() => setEditId(editing ? null : t.id)}>{editing ? "Editing" : "Edit"}</button>
                     <button className="btn sm danger" onClick={() => setTools((p) => p.filter((x) => x.id !== t.id))}>Delete</button>
@@ -2169,6 +2259,11 @@ select.num{font-family:'Archivo',sans-serif}
 .row-prog-top{display:flex;justify-content:space-between;gap:12px;align-items:baseline;padding:1px 0 5px}
 .row-prog-top .milestone{margin:0}
 .btn.sm.ready{color:var(--mfg);border-color:#BFD8C8;background:#EDF6F0;opacity:1}
+/* per-lookup cost hints */
+.cost-hint{font-family:'IBM Plex Mono',monospace;font-size:10.5px;font-weight:500;opacity:.6;margin-left:3px}
+.cost-link{font-family:'IBM Plex Mono',monospace;font-size:11px;margin-left:auto;color:var(--label);text-decoration:none;border-bottom:1px dotted var(--line)}
+.cost-link:hover{color:var(--accent-ink);border-bottom-color:var(--accent)}
+.rates-card{margin-top:8px}
 
 /* inline tool editing: the editor opens in a full-width row right under the tool */
 tr.row-editing td{background:#FBF4E6}

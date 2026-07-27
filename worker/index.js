@@ -81,7 +81,11 @@ Group key: N=nonferrous (N1 wrought alum, N2 cast alum low-Si, N3 cast alum high
 
 Use inches internally: convert metric diameter, LOC, pitch, feed per tooth, and feed per rev into inches. Prefer manufacturer-published cutting data. Only include cutting groups the manufacturer actually publishes or clearly intends — do not interpolate or invent ranges for groups they don't rate the tool for. If you can identify the tool but not published cutting data, set found=true with an empty "cutting" array. If you cannot identify the tool at all, set found=false and leave the tool fields empty or null rather than filling in placeholder numbers.`;
 
-  const run = async (onProgress) => parseJsonOutput(await modelJson(env, { prompt, useWebSearch: true, maxSearches: 6, effort: "low", onProgress }));
+  const run = async (onProgress) => {
+    const r = await modelJson(env, { prompt, useWebSearch: true, maxSearches: 6, effort: "low", onProgress });
+    // hand real usage back so the UI can price lookups from measurement, not guesswork
+    return { ...parseJsonOutput(r.text), _usage: r.usage };
+  };
   if (streaming) return sseResponse(ctx, run);
   return json(await run());
 }
@@ -106,7 +110,7 @@ Respond with ONLY a raw JSON object, no markdown fences, no preamble:
 }
 If no recognizable power/torque curve exists in the file, set found=false with empty points.`;
 
-  const text = await modelJson(env, {
+  const { text } = await modelJson(env, {
     prompt,
     file: { filename, mimeType, fileData },
     effort: "medium", // reading a chart accurately needs a bit more than "low"
@@ -148,7 +152,10 @@ Respond with ONLY a raw JSON object, no markdown fences, no preamble:
 
 Ground every curve in published data: an actual curve chart, or published torque/power figures at stated RPMs (e.g. "75 ft-lb at 1400 RPM, 30 HP peak, 8100 RPM max"). If you can only find a few published anchor points, return just those points and say so in the curve's notes rather than inventing a smooth curve. Do NOT fabricate numbers for a machine you cannot find data for — set found=false with an empty curves array instead. If the machine was sold with multiple factory spindle options (e.g. 8100 vs 12000 RPM, standard vs high-torque), pick the option matching the stated max RPM and note the assumption; if none matches, return the standard option.`;
 
-  const run = async (onProgress) => parseJsonOutput(await modelJson(env, { prompt, useWebSearch: true, maxTokens: 4000, maxSearches: 8, effort: "medium", onProgress }));
+  const run = async (onProgress) => {
+    const r = await modelJson(env, { prompt, useWebSearch: true, maxTokens: 4000, maxSearches: 8, effort: "medium", onProgress });
+    return { ...parseJsonOutput(r.text), _usage: r.usage };
+  };
   if (streaming) return sseResponse(ctx, run);
   return json(await run());
 }
@@ -192,6 +199,7 @@ function progressTracker(onProgress) {
   let chars = 0;
   let lastCharsMsg = 0;
   return {
+    get searches() { return searches; },
     searchStart() { searches++; onProgress(`Web search #${searches} running…`); },
     searchDone() { onProgress(`Web search #${searches} done — reading results…`); },
     reasoning() { onProgress(searches ? "Reasoning over what it found…" : "Reading the request…"); },
@@ -281,11 +289,16 @@ async function openaiResponse(env, request) {
   const track = progressTracker(request.onProgress || (() => {}));
   let text = "";
   let failure = null;
+  let inTok = 0, outTok = 0;
   await readSse(response, (ev) => {
     if (ev.type === "response.output_text.delta" && typeof ev.delta === "string") { text += ev.delta; track.text(ev.delta); }
     else if (ev.type === "response.output_item.added" && ev.item?.type === "web_search_call") track.searchStart();
     else if (ev.type === "response.web_search_call.completed") track.searchDone();
     else if (ev.type === "response.output_item.added" && ev.item?.type === "reasoning") track.reasoning();
+    else if (ev.type === "response.completed" && ev.response?.usage) {
+      inTok = ev.response.usage.input_tokens || 0;
+      outTok = ev.response.usage.output_tokens || 0;
+    }
     else if (ev.type === "response.failed") failure = ev.response?.error?.message || "response.failed";
     else if (ev.type === "error") failure = ev.message || ev.error?.message || "stream error";
   });
@@ -299,7 +312,7 @@ async function openaiResponse(env, request) {
     err.retryable = true;
     throw err;
   }
-  return text;
+  return { text, usage: { searches: track.searches, inputTokens: inTok, outputTokens: outTok, provider: "openai" } };
 }
 
 async function anthropicResponse(env, request) {
@@ -339,10 +352,13 @@ async function anthropicResponse(env, request) {
   const track = progressTracker(request.onProgress || (() => {}));
   let text = "";
   let failure = null;
+  let inTok = 0, outTok = 0;
   await readSse(response, (ev) => {
     if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") { text += ev.delta.text; track.text(ev.delta.text); }
     else if (ev.type === "content_block_start" && ev.content_block?.type === "server_tool_use") track.searchStart();
     else if (ev.type === "content_block_start" && ev.content_block?.type === "web_search_tool_result") track.searchDone();
+    else if (ev.type === "message_start" && ev.message?.usage) inTok = ev.message.usage.input_tokens || 0;
+    else if (ev.type === "message_delta" && ev.usage) outTok = ev.usage.output_tokens || outTok;
     else if (ev.type === "error") failure = ev.error?.message || "stream error";
   });
   if (failure) {
@@ -355,7 +371,7 @@ async function anthropicResponse(env, request) {
     err.retryable = true;
     throw err;
   }
-  return text;
+  return { text, usage: { searches: track.searches, inputTokens: inTok, outputTokens: outTok, provider: "anthropic" } };
 }
 
 function parseJsonOutput(text) {
