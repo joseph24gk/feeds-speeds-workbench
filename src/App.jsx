@@ -638,14 +638,16 @@ function seedParams(tool, group, mode, op) {
 function Field({ label, unit, src, children }) {
   return (
     <label className="field">
-      <span className="field-label">
-        {label}{unit ? <em>{unit}</em> : null}
+      <span className="field-label">{label}{unit ? <em>{unit}</em> : null}</span>
+      {children}
+      {/* the tag sits in its own reserved row so it can never reflow the grid
+          when it appears, changes, or disappears */}
+      <span className="field-src">
         {src && (src.onRevert
           ? <button type="button" className={"src-tag " + src.kind} onClick={src.onRevert}
               title={`You changed this — click to restore the suggested ${src.suggest ?? "value"}`}>{src.text} ↺</button>
           : <span className={"src-tag " + src.kind} title={src.title}>{src.text}</span>)}
       </span>
-      {children}
     </label>
   );
 }
@@ -662,7 +664,9 @@ function NumInput({ value, onChange, step, min, disabled, metric, isLength, isFe
   return (
     <input
       className="num" type="number" step={step || "any"} min={min} disabled={disabled} value={text}
-      onFocus={() => setEditing(true)}
+      /* re-sync on focus: if focus arrives while `text` is stale (e.g. a slider
+         drag just changed `value`), blur would otherwise write the old number back */
+      onFocus={() => { setText(Number.isFinite(value) ? String(+toDisp(value).toFixed(digits)) : ""); setEditing(true); }}
       onBlur={() => { setEditing(false); const n = parseFloat(text); if (Number.isFinite(n)) onChange(fromDisp(n)); }}
       onChange={(e) => { setText(e.target.value); const n = parseFloat(e.target.value); if (Number.isFinite(n)) onChange(fromDisp(n)); }}
     />
@@ -710,6 +714,7 @@ function RatioBar({ value, max, onChange, limitLabel, assumed }) {
   return (
     <div className="ratio">
       <button type="button" className="ratio-track" ref={trackRef} onPointerDown={onPointerDown} onKeyDown={onKeyDown}
+        onClick={(e) => e.preventDefault()} /* stop the wrapping <label> pulling focus into the number input */
         role="slider" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100} aria-label={`Percent of ${limitLabel}`}
         title={`Drag to set — ceiling is ${limitLabel}${assumed ? " (assumed)" : ""}`}>
         <i className={level} style={{ width: Math.min(pct, 100) + "%" }} />
@@ -1958,6 +1963,7 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
             ))}
           </div>
         )}
+        <hr className="step" />
         {tools.length > 0 && (
           <div className="filters">
             <span className="chip-label">Tools</span>
@@ -2035,6 +2041,7 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
           </div>
         ) : (
           <>
+            <hr className="step" />
             <div className="chip-rows">
               {isMill && (
                 <div className="chip-row">
@@ -2070,6 +2077,7 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
               )}
             </div>
 
+            <hr className="step" />
             <div className="grid-form">
               <Field label="Cutting speed (target)" unit={metric ? "m/min" : "SFM"} src={cutSrc("sfm", setSfm)}>
                 <NumInput value={metric ? sfm * 0.3048 : sfm} onChange={(v) => editSfm(metric ? v / 0.3048 : v)} digits={0} />
@@ -2158,6 +2166,14 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
 
       {tool && result && (
         <div className="dro">
+          {/* names the panel for what it is — computed output, not a machine readout */}
+          <div className="dro-head">
+            <span className="dro-head-title">Program these</span>
+            <span className="dro-head-sub">
+              {toolLabel(tool, metric)} · {group} · {op === "adaptive" ? "adaptive" : op === "slot" ? "slotting" : op === "finish3d" ? "3D finish" : op === "drill" ? "drilling" : op === "tap" ? "tapping" : op === "chamfer" ? "chamfering" : "side milling"}
+              {machine ? ` · ${machine.name}` : ""}
+            </span>
+          </div>
           <div className="dro-main">
             <div className="dro-cell big">
               <span className="dro-label">Spindle</span>
@@ -2255,9 +2271,10 @@ main{padding:18px 22px;margin:0 auto}
 .field{display:flex;flex-direction:column;gap:4px}
 .field-label{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--label)}
 .field-label em{font-style:normal;color:var(--accent-ink);margin-left:5px;text-transform:none}
-/* provenance tag: where this number came from */
-.field-label{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.src-tag{font-family:'IBM Plex Mono',monospace;font-size:9.5px;font-weight:500;letter-spacing:0;text-transform:none;padding:1px 6px;border-radius:99px;border:1px solid transparent;white-space:nowrap;margin-left:auto}
+/* provenance tag: where this number came from. Its row is always present (even
+   when empty) so showing/hiding a tag never shifts the grid. */
+.field-src{display:flex;align-items:center;min-height:16px;margin-top:5px}
+.src-tag{font-family:'IBM Plex Mono',monospace;font-size:9.5px;font-weight:500;letter-spacing:0;text-transform:none;padding:1px 6px;border-radius:99px;border:1px solid transparent;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
 .src-tag.mfg{background:#E2F1E8;color:var(--mfg);border-color:#C6E2D2}
 .src-tag.gen{background:var(--info-bg);color:var(--label);border-color:var(--line)}
 .src-tag.geo{background:#EAEEF4;color:#4A6079;border-color:#D3DCE6}
@@ -2381,7 +2398,14 @@ tr.row-sel td{background:#FBF4E6}
 .chip{border:1px solid var(--line);background:#fff;font:inherit;font-size:12.5px;font-weight:500;padding:5px 12px;border-radius:99px;cursor:pointer;color:var(--ink)}
 .chip-on{background:var(--ink);border-color:var(--ink);color:#fff}
 
-.dro{background:var(--dro-bg);border-radius:12px;padding:18px;border:1px solid #000;box-shadow:inset 0 1px 0 rgba(255,255,255,.06)}
+.dro{background:var(--dro-bg);border-radius:12px;padding:14px 18px 18px;border:1px solid #000;box-shadow:inset 0 1px 0 rgba(255,255,255,.06)}
+/* header names the panel: these are values you program, not a machine's readout */
+.dro-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;padding-bottom:10px;margin-bottom:13px;border-bottom:1px solid var(--dro-line)}
+.dro-head-title{font-family:'Archivo Expanded','Archivo',sans-serif;font-weight:700;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#9FB3AB}
+.dro-head-sub{font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--dro-dim);text-align:right}
+
+/* hairline step dividers between calculator stages */
+hr.step{border:0;height:1px;margin:16px 0 14px;background:linear-gradient(to right,var(--line),var(--line) 70%,transparent)}
 .dro-main{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
 .dro-cell{display:flex;flex-direction:column;gap:2px;padding:10px 12px;border:1px solid var(--dro-line);border-radius:8px}
 .dro-cell.big .dro-val{font-size:38px}
