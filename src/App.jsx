@@ -143,6 +143,20 @@ function BrandIcon({ name, size = 16 }) {
 const FINISH_FZ_FACTOR = 0.6; // finishing chipload vs roughing
 const FINISH_SFM_FACTOR = 1.1; // slightly higher speed for finish is fine
 
+/* Face milling. Manufacturers rarely publish a separate "facing" row — they don't
+   need to: chipload is per tooth and speed is per material, so both carry over
+   from the tool's normal cutting data. What's different is the engagement, which
+   is the inverse of side milling: axial depth is the thin finish stock and radial
+   width is a wide fraction of the cutter. */
+const FACE_ENGAGE = 0.7;        // seed radial width at 70% of Ø (60–80% is the band)
+const FACE_ENGAGE_BAND = [0.6, 0.8];
+/* Recommended axial depth for a facing pass, from the material's stock-to-leave.
+   Finish takes the light end of the group's allowance; roughing is cutter-limited. */
+const faceDepth = (grp, mode, D) => mode === "finish"
+  ? GROUPS[grp].stock[0]
+  : Math.min(D * 0.1, 0.15);
+const faceDepthBand = (grp) => GROUPS[grp].stock;
+
 // chipload scales with diameter (baseline table is for 1/2")
 const scaleIpt = (iptAtHalf, dia) => iptAtHalf * Math.pow(Math.max(dia, 0.01) / 0.5, 0.7);
 
@@ -572,7 +586,30 @@ function computeCut({ tool, machine, curveId, group, op, mode, sfm, ae, ap, targ
   // engagement sanity
   if (op === "slot" && ap > D * 1.05) out.warnings.push({ level: "amber", msg: `Slotting deeper than 1×Ø (${fmt(D, 3)}") in one pass — consider multiple stepdowns.` });
   if (op === "side" && ae > D * 0.55) out.warnings.push({ level: "amber", msg: `Radial engagement > 0.5×Ø in conventional side milling — heavy cut, watch deflection.` });
-  if (mode === "finish" && ae > 0.025) out.info.push(`Finishing tip: typical stock-to-leave for this material is ${fmt(g.stock[0], 3)}"–${fmt(g.stock[1], 3)}" radial. Spring passes recommended on toleranced walls.`);
+
+  if (op === "face") {
+    const engage = ae / D;
+    const feedPerRev = z * fzProg;
+    out.feedPerRev = feedPerRev;
+    out.engage = engage;
+    if (engage > 0.95) {
+      out.warnings.push({ level: "amber", msg: `Cutter is fully buried (${fmt(engage * 100, 0)}% of Ø). Centred on the cut it enters at 0° — shock loading on entry and it re-cuts chips on exit. Step the cutter off the part centreline so width lands near ${fmt(FACE_ENGAGE_BAND[0] * 100, 0)}–${fmt(FACE_ENGAGE_BAND[1] * 100, 0)}% of Ø.` });
+    } else if (engage < FACE_ENGAGE_BAND[0]) {
+      out.info.push(`Radial width is ${fmt(engage * 100, 0)}% of Ø — below the ${fmt(FACE_ENGAGE_BAND[0] * 100, 0)}–${fmt(FACE_ENGAGE_BAND[1] * 100, 0)}% band, so the chip thins (${fmt(1 / ctf, 2)}× feed compensation applied) and you make more passes than you need to.`);
+    } else if (engage > FACE_ENGAGE_BAND[1]) {
+      out.info.push(`Radial width is ${fmt(engage * 100, 0)}% of Ø — a little past the ${fmt(FACE_ENGAGE_BAND[1] * 100, 0)}% band. Still workable, but keep the cutter off the part centreline so it never enters at 0°.`);
+    } else {
+      out.info.push(`Radial width is ${fmt(engage * 100, 0)}% of Ø — in the ${fmt(FACE_ENGAGE_BAND[0] * 100, 0)}–${fmt(FACE_ENGAGE_BAND[1] * 100, 0)}% band, with the cutter offset from the part centreline for a favourable entry angle.`);
+    }
+    // on a face pass the finish is set by how far the cutter advances per revolution
+    out.info.push(`Surface finish on a face pass tracks feed per revolution: ${fmt(feedPerRev, 4)}"/rev (${fmt(feedPerRev * IN_MM, 3)} mm/rev) across ${z} flutes. Slow the feed or add a wiper insert if the finish isn't there.`);
+    if (mode === "finish") {
+      const band = GROUPS[group].stock;
+      out.info.push(`Typical finish allowance for ${group} is ${fmt(band[0], 4)}"–${fmt(band[1], 4)}" — you're taking ${fmt(ap, 4)}". Cutting much under it risks rubbing instead of cutting, which burnishes the surface and kills tool life.`);
+    }
+  }
+  // (facing states its own allowance below — this one is about walls, not floors)
+  if (mode === "finish" && ae > 0.025 && op !== "face") out.info.push(`Finishing tip: typical stock-to-leave for this material is ${fmt(g.stock[0], 3)}"–${fmt(g.stock[1], 3)}" radial. Spring passes recommended on toleranced walls.`);
 
   powerCheck(out, machine, rpm, curveId);
   return out;
@@ -1833,7 +1870,9 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
       setAp(v); fresh.ap = v;
     } else if (tool.type !== "drill" && tool.type !== "tap") {
       let a, p;
-      if (mode === "finish") { a = GROUPS[group].stock[0]; p = Math.min(tool.loc || tool.dia * 2, tool.dia * 2); }
+      // facing owns its geometry regardless of rough/finish: wide radial, thin axial
+      if (op === "face") { a = +(tool.dia * FACE_ENGAGE).toFixed(4); p = +faceDepth(group, mode, tool.dia).toFixed(4); }
+      else if (mode === "finish") { a = GROUPS[group].stock[0]; p = Math.min(tool.loc || tool.dia * 2, tool.dia * 2); }
       else if (op === "adaptive") { a = +(tool.dia * 0.12).toFixed(4); p = Math.min(tool.loc || tool.dia * 1.5, tool.dia * 1.5); }
       else if (op === "slot") { a = tool.dia; p = +(tool.dia * 0.5).toFixed(4); }
       else { a = +(tool.dia * 0.25).toFixed(4); p = +(tool.dia * 1).toFixed(4); }
@@ -1907,6 +1946,9 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
     : { kind: "gen", text: "generic table", title: `Seeded from the built-in ${group} table — no manufacturer data for this tool` });
   const geoSrc = (key, setter) => srcOf(key, setter)
     || { kind: "geo", text: "from tool geometry", title: "Derived from the tool's diameter and flute length — not from manufacturer cutting data" };
+  /* a facing depth comes from the material's finish allowance, not the cutter */
+  const stockSrc = (key, setter) => srcOf(key, setter)
+    || { kind: "geo", text: `${group} finish stock`, title: `Seeded from the ${group} stock-to-leave range — type over it with your own allowance` };
 
   /* ceilings the tool's own geometry imposes: radial can't exceed the cutter Ø,
      axial can't exceed the flute length (past that the shank is in the cut) */
@@ -2048,6 +2090,7 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
                   <span className="chip-label">Operation</span>
                   <Chip active={op === "adaptive"} onClick={() => setOp("adaptive")}><BrandIcon name="fusion" size={14} />Adaptive / dynamic</Chip>
                   <Chip active={op === "side"} onClick={() => setOp("side")}>Side milling</Chip>
+                  <Chip active={op === "face"} onClick={() => setOp("face")}>Facing</Chip>
                   <Chip active={op === "slot"} onClick={() => setOp("slot")}>Slotting</Chip>
                   {tool.type === "ball_endmill" && <Chip active={op === "finish3d"} onClick={() => setOp("finish3d")}>3D finishing</Chip>}
                 </div>
@@ -2110,14 +2153,21 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
               )}
               {isMill && (
                 <>
-                  <Field label={op === "adaptive" ? "Optimal load (radial, ae)" : op === "slot" ? "Slot width (= Ø)" : "Stepover (radial, ae)"} unit={lenU}
+                  <Field label={op === "adaptive" ? "Optimal load (radial, ae)" : op === "slot" ? "Slot width (= Ø)" : op === "face" ? "Width of cut (radial, ae)" : "Stepover (radial, ae)"} unit={lenU}
                     src={op === "slot" ? { kind: "calc", text: "= cutter Ø", title: "A slot is exactly as wide as the cutter" } : geoSrc("ae", setAe)}>
                     <NumInput value={op === "slot" ? tool.dia : ae} onChange={editAe} metric={metric} isLength disabled={op === "slot"} />
                     {geo && op !== "slot" && <RatioBar value={ae} max={geo.ae.max} onChange={editAe} limitLabel={geo.ae.label} />}
+                    {op === "face" && (
+                      <span className="derived-note">aim {fmt(FACE_ENGAGE_BAND[0] * 100, 0)}–{fmt(FACE_ENGAGE_BAND[1] * 100, 0)}% of Ø, cutter offset off the part centreline</span>
+                    )}
                   </Field>
-                  <Field label="Stepdown (axial, ap)" unit={lenU} src={geoSrc("ap", setAp)}>
+                  <Field label={op === "face" ? "Depth of cut (axial, ap)" : "Stepdown (axial, ap)"} unit={lenU}
+                    src={op === "face" ? stockSrc("ap", setAp) : geoSrc("ap", setAp)}>
                     <NumInput value={ap} onChange={editAp} metric={metric} isLength />
                     {geo && <RatioBar value={ap} max={geo.ap.max} onChange={editAp} limitLabel={geo.ap.label} assumed={geo.ap.assumed} />}
+                    {op === "face" && mode === "finish" && (
+                      <span className="derived-note">{group} finish allowance {thouDisp(faceDepthBand(group)[0], 4)}–{thouDisp(faceDepthBand(group)[1], 4)}</span>
+                    )}
                   </Field>
                   {op === "adaptive" ? (
                     <Field label="Target chip thickness" unit={lenU} src={cutSrc("targetChip", setTargetChip)}>
@@ -2170,7 +2220,7 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
           <div className="dro-head">
             <span className="dro-head-title">Program these</span>
             <span className="dro-head-sub">
-              {toolLabel(tool, metric)} · {group} · {op === "adaptive" ? "adaptive" : op === "slot" ? "slotting" : op === "finish3d" ? "3D finish" : op === "drill" ? "drilling" : op === "tap" ? "tapping" : op === "chamfer" ? "chamfering" : "side milling"}
+              {toolLabel(tool, metric)} · {group} · {op === "adaptive" ? "adaptive" : op === "slot" ? "slotting" : op === "face" ? `facing (${mode === "finish" ? "finish" : "rough"})` : op === "finish3d" ? "3D finish" : op === "drill" ? "drilling" : op === "tap" ? "tapping" : op === "chamfer" ? "chamfering" : "side milling"}
               {machine ? ` · ${machine.name}` : ""}
             </span>
           </div>
@@ -2190,6 +2240,12 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
             <DroStat label="Actual SFM" v={metric ? fmt(result.sfmActual * 0.3048, 0) + " m/min" : fmt(result.sfmActual, 0)} />
             <DroStat label={isDrill ? "Feed / rev" : isTap ? "Pitch / rev" : "Programmed fz"} v={thouDisp(result.fzProg)} />
             {isMill && <DroStat label="Actual chip" v={op === "adaptive" ? thouDisp(targetChip) : thouDisp(result.chipActual ?? fz)} />}
+            {op === "face" && Number.isFinite(result.feedPerRev) && (
+              <DroStat label="Feed / rev" v={metric ? fmt(result.feedPerRev * IN_MM, 3) + " mm" : fmt(result.feedPerRev, 4) + '"'} />
+            )}
+            {op === "face" && Number.isFinite(result.engage) && (
+              <DroStat label="Radial engagement" v={fmt(result.engage * 100, 0) + "% of Ø"} />
+            )}
             <DroStat label="MRR" v={metric ? fmt(result.mrr * 16.387, 1) + " cm³/min" : fmt(result.mrr, 2) + " in³/min"} />
             <DroStat label="Power @ tool" v={fmt(result.hp, 2) + " HP"} />
             <DroStat label="Torque @ tool" v={fmt(result.torque, 2) + " ft-lb"} />
@@ -2207,7 +2263,7 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
           )}
           {result.warnings.map((w, i) => <div key={i} className={"notice " + (w.level === "red" ? "red" : "amber")}>{w.msg}</div>)}
           {result.info.map((s, i) => <div key={i} className="notice info">{s}</div>)}
-          {mode === "finish" && !isDrill && !isChamfer && (
+          {mode === "finish" && !isDrill && !isChamfer && op !== "face" && (
             <div className="notice info">Stock-to-leave for {group}: {thouDisp(g.stock[0], 3)}–{thouDisp(g.stock[1], 3)} radial · roughly half that axial on floors. Add a spring pass on toleranced or thin walls.</div>
           )}
           {seedSrc === "generic" && <div className="notice info">Running on generic {group} tables for this tool — conservative starting points. Add manufacturer data in the library to sharpen them.</div>}
