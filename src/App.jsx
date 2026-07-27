@@ -631,10 +631,20 @@ function seedParams(tool, group, mode, op) {
 /* ============================================================
    UI PRIMITIVES
    ============================================================ */
-function Field({ label, unit, children }) {
+/* `src` tags a field with where its number came from — manufacturer data, a
+   generic table, tool geometry, or you. When you've edited it the tag becomes a
+   button that puts the suggested value back. It's a <button> so the wrapping
+   <label> doesn't forward the click into the input. */
+function Field({ label, unit, src, children }) {
   return (
     <label className="field">
-      <span className="field-label">{label}{unit ? <em>{unit}</em> : null}</span>
+      <span className="field-label">
+        {label}{unit ? <em>{unit}</em> : null}
+        {src && (src.onRevert
+          ? <button type="button" className={"src-tag " + src.kind} onClick={src.onRevert}
+              title={`You changed this — click to restore the suggested ${src.suggest ?? "value"}`}>{src.text} ↺</button>
+          : <span className={"src-tag " + src.kind} title={src.title}>{src.text}</span>)}
+      </span>
       {children}
     </label>
   );
@@ -1734,6 +1744,21 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
   const [targetChip, setTargetChip] = useState(0.004);
   const [ipr, setIpr] = useState(0.006);
   const [seedSrc, setSeedSrc] = useState("generic");
+  const [seeded, setSeeded] = useState({}); // last auto-seeded values, so an edit can be undone
+  const [touched, setTouched] = useState({}); // fields the user has changed since the last reseed
+  const mark = (k) => setTouched((t) => (t[k] ? t : { ...t, [k]: true }));
+  /* wrap each setter so typing/dragging flags the field as yours */
+  const editSfm = (v) => { setSfm(v); mark("sfm"); };
+  const editAe = (v) => { setAe(v); mark("ae"); };
+  const editAp = (v) => { setAp(v); mark("ap"); };
+  const editFz = (v) => { setFz(v); mark("fz"); };
+  const editChip = (v) => { setTargetChip(v); mark("targetChip"); };
+  const editIpr = (v) => { setIpr(v); mark("ipr"); };
+  const revert = (k, setter) => () => {
+    if (seeded[k] === undefined) return;
+    setter(seeded[k]);
+    setTouched((t) => { const n = { ...t }; delete n[k]; return n; });
+  };
   const [fType, setFType] = useState("all");
   const [fBrand, setFBrand] = useState("all");
   const [fDia, setFDia] = useState("all");
@@ -1787,20 +1812,30 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
   useEffect(() => {
     if (!tool || skipSeed.current) return;
     const s = seedParams(tool, group, mode, op);
+    const fresh = { sfm: s.sfm };
     setSfm(s.sfm); setSeedSrc(s.source);
-    if (tool.type === "drill") { if (s.ipt) setIpr(s.ipt); }
-    else if (s.ipt) { setFz(s.ipt); setTargetChip(+(s.ipt * (mode === "rough" ? 0.9 : 0.8)).toFixed(5)); }
-    // engagement defaults
+    if (tool.type === "drill") { if (s.ipt) { setIpr(s.ipt); fresh.ipr = s.ipt; } }
+    else if (s.ipt) {
+      const chip = +(s.ipt * (mode === "rough" ? 0.9 : 0.8)).toFixed(5);
+      setFz(s.ipt); setTargetChip(chip);
+      fresh.fz = s.ipt; fresh.targetChip = chip;
+    }
+    // engagement defaults — these come from tool geometry, never from catalog data
     if (tool.type === "chamfer_mill") {
       const half = (((tool.angle || 90) / 2) * Math.PI) / 180;
       const maxDepth = ((tool.dia - (tool.tipDia || 0)) / 2) / Math.tan(half);
-      setAp(+Math.min(0.04, maxDepth * 0.75).toFixed(4));
+      const v = +Math.min(0.04, maxDepth * 0.75).toFixed(4);
+      setAp(v); fresh.ap = v;
     } else if (tool.type !== "drill" && tool.type !== "tap") {
-      if (mode === "finish") { setAe(GROUPS[group].stock[0]); setAp(Math.min(tool.loc || tool.dia * 2, tool.dia * 2)); }
-      else if (op === "adaptive") { setAe(+(tool.dia * 0.12).toFixed(4)); setAp(Math.min(tool.loc || tool.dia * 1.5, tool.dia * 1.5)); }
-      else if (op === "slot") { setAe(tool.dia); setAp(+(tool.dia * 0.5).toFixed(4)); }
-      else { setAe(+(tool.dia * 0.25).toFixed(4)); setAp(+(tool.dia * 1).toFixed(4)); }
+      let a, p;
+      if (mode === "finish") { a = GROUPS[group].stock[0]; p = Math.min(tool.loc || tool.dia * 2, tool.dia * 2); }
+      else if (op === "adaptive") { a = +(tool.dia * 0.12).toFixed(4); p = Math.min(tool.loc || tool.dia * 1.5, tool.dia * 1.5); }
+      else if (op === "slot") { a = tool.dia; p = +(tool.dia * 0.5).toFixed(4); }
+      else { a = +(tool.dia * 0.25).toFixed(4); p = +(tool.dia * 1).toFixed(4); }
+      setAe(a); setAp(p); fresh.ae = a; fresh.ap = p;
     }
+    setSeeded(fresh);
+    setTouched({}); // a reseed replaces everything, so nothing is "yours" yet
   }, [toolKey, group, mode, op]); // eslint-disable-line
 
   const result = useMemo(() => {
@@ -1852,6 +1887,21 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
   const lenU = metric ? "mm" : "in";
   const feedDisp = (v) => metric ? fmt(v * IN_MM, 0) + " mm/min" : fmt(v, 1) + " in/min";
   const thouDisp = (v, d = 5) => metric ? fmt(v * IN_MM, 3) + " mm" : fmt(v, d) + '"';
+
+  /* Where each field's number came from. The important distinction: speed and
+     feed-per-tooth can come from the manufacturer's catalog, but engagement
+     (optimal load / stepover / stepdown) never does — those are derived from the
+     tool's geometry, so they're labelled honestly rather than riding the
+     "manufacturer data" badge. */
+  const srcOf = (key, setter, suggestLabel) => {
+    if (touched[key]) return { kind: "you", text: "yours", onRevert: revert(key, setter), suggest: suggestLabel };
+    return null;
+  };
+  const cutSrc = (key, setter) => srcOf(key, setter) || (seedSrc === "manufacturer"
+    ? { kind: "mfg", text: tool?.brand ? `${tool.brand} data` : "mfg data", title: "Seeded from this tool's manufacturer cutting data" }
+    : { kind: "gen", text: "generic table", title: `Seeded from the built-in ${group} table — no manufacturer data for this tool` });
+  const geoSrc = (key, setter) => srcOf(key, setter)
+    || { kind: "geo", text: "from tool geometry", title: "Derived from the tool's diameter and flute length — not from manufacturer cutting data" };
 
   /* ceilings the tool's own geometry imposes: radial can't exceed the cutter Ø,
      axial can't exceed the flute length (past that the shank is in the cut) */
@@ -2003,8 +2053,9 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
                     <Chip active={mode === "finish"} onClick={() => setMode("finish")}>Finishing</Chip>
                   </>
                 )}
-                <span className={"pill " + (seedSrc === "manufacturer" ? "mfg" : "gen")}>
-                  {seedSrc === "manufacturer" ? "seeded from manufacturer data" : "seeded from generic tables"}
+                <span className={"pill " + (seedSrc === "manufacturer" ? "mfg" : "gen")}
+                  title="Applies to speed and feed per tooth. Engagement values are always derived from tool geometry.">
+                  {seedSrc === "manufacturer" ? "speed & feed from manufacturer data" : "speed & feed from generic tables"}
                 </span>
                 {quickTool && <span className="pill gen">quick tool · Ø{diaLabel(quickTool.dia, metric)}{quickTool.quickLabel ? ` (${quickTool.quickLabel})` : ""}</span>}
               </div>
@@ -2020,20 +2071,27 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
             </div>
 
             <div className="grid-form">
-              <Field label="Cutting speed" unit={metric ? "m/min" : "SFM"}>
-                <NumInput value={metric ? sfm * 0.3048 : sfm} onChange={(v) => setSfm(metric ? v / 0.3048 : v)} digits={0} />
+              <Field label="Cutting speed (target)" unit={metric ? "m/min" : "SFM"} src={cutSrc("sfm", setSfm)}>
+                <NumInput value={metric ? sfm * 0.3048 : sfm} onChange={(v) => editSfm(metric ? v / 0.3048 : v)} digits={0} />
+                {result?.clamped && (
+                  /* the number you asked for isn't the number you get once RPM hits the machine ceiling */
+                  <span className="derived-note">
+                    → actually cutting {metric ? fmt(result.sfmActual * 0.3048, 0) + " m/min" : fmt(result.sfmActual, 0) + " SFM"} · RPM capped at {fmt(result.rpm, 0)}
+                  </span>
+                )}
               </Field>
-              <Field label="Spindle speed" unit="RPM">
+              <Field label="Spindle speed" unit="RPM" src={{ kind: "calc", text: "calculated", title: "Computed from cutting speed and cutter diameter — type here to work backwards to a speed" }}>
                 <NumInput value={result?.rpm || 0} onChange={setRpmDirect} digits={0} />
+                {result?.clamped && <span className="derived-note clamp">at {machine?.name}'s ceiling — asked for {fmt(result.rpmRaw, 0)}</span>}
               </Field>
               {isChamfer && (
                 <>
-                  <Field label="Chamfer depth (axial)" unit={lenU}>
-                    <NumInput value={ap} onChange={setAp} metric={metric} isLength />
-                    {geo && <RatioBar value={ap} max={geo.ap.max} onChange={setAp} limitLabel={geo.ap.label} />}
+                  <Field label="Chamfer depth (axial)" unit={lenU} src={geoSrc("ap", setAp)}>
+                    <NumInput value={ap} onChange={editAp} metric={metric} isLength />
+                    {geo && <RatioBar value={ap} max={geo.ap.max} onChange={editAp} limitLabel={geo.ap.label} />}
                   </Field>
-                  <Field label="Feed per tooth (fz)" unit={lenU}>
-                    <NumInput value={fz} onChange={setFz} metric={metric} isFeedPerTooth digits={metric ? 3 : 5} />
+                  <Field label="Feed per tooth (fz)" unit={lenU} src={cutSrc("fz", setFz)}>
+                    <NumInput value={fz} onChange={editFz} metric={metric} isFeedPerTooth digits={metric ? 3 : 5} />
                   </Field>
                 </>
               )}
@@ -2044,28 +2102,32 @@ function Calculator({ machines, tools, setTools, metric, goTo }) {
               )}
               {isMill && (
                 <>
-                  <Field label={op === "adaptive" ? "Optimal load (radial, ae)" : op === "slot" ? "Slot width (= Ø)" : "Stepover (radial, ae)"} unit={lenU}>
-                    <NumInput value={op === "slot" ? tool.dia : ae} onChange={setAe} metric={metric} isLength disabled={op === "slot"} />
-                    {geo && op !== "slot" && <RatioBar value={ae} max={geo.ae.max} onChange={setAe} limitLabel={geo.ae.label} />}
+                  <Field label={op === "adaptive" ? "Optimal load (radial, ae)" : op === "slot" ? "Slot width (= Ø)" : "Stepover (radial, ae)"} unit={lenU}
+                    src={op === "slot" ? { kind: "calc", text: "= cutter Ø", title: "A slot is exactly as wide as the cutter" } : geoSrc("ae", setAe)}>
+                    <NumInput value={op === "slot" ? tool.dia : ae} onChange={editAe} metric={metric} isLength disabled={op === "slot"} />
+                    {geo && op !== "slot" && <RatioBar value={ae} max={geo.ae.max} onChange={editAe} limitLabel={geo.ae.label} />}
                   </Field>
-                  <Field label="Stepdown (axial, ap)" unit={lenU}>
-                    <NumInput value={ap} onChange={setAp} metric={metric} isLength />
-                    {geo && <RatioBar value={ap} max={geo.ap.max} onChange={setAp} limitLabel={geo.ap.label} assumed={geo.ap.assumed} />}
+                  <Field label="Stepdown (axial, ap)" unit={lenU} src={geoSrc("ap", setAp)}>
+                    <NumInput value={ap} onChange={editAp} metric={metric} isLength />
+                    {geo && <RatioBar value={ap} max={geo.ap.max} onChange={editAp} limitLabel={geo.ap.label} assumed={geo.ap.assumed} />}
                   </Field>
                   {op === "adaptive" ? (
-                    <Field label="Target chip thickness" unit={lenU}>
-                      <NumInput value={targetChip} onChange={setTargetChip} metric={metric} isFeedPerTooth digits={metric ? 3 : 5} />
+                    <Field label="Target chip thickness" unit={lenU} src={cutSrc("targetChip", setTargetChip)}>
+                      <NumInput value={targetChip} onChange={editChip} metric={metric} isFeedPerTooth digits={metric ? 3 : 5} />
+                      {result && Number.isFinite(result.fzProg) && (
+                        <span className="derived-note">→ programs {thouDisp(result.fzProg)} fz after chip thinning</span>
+                      )}
                     </Field>
                   ) : (
-                    <Field label="Feed per tooth (fz)" unit={lenU}>
-                      <NumInput value={fz} onChange={setFz} metric={metric} isFeedPerTooth digits={metric ? 3 : 5} />
+                    <Field label="Feed per tooth (fz)" unit={lenU} src={cutSrc("fz", setFz)}>
+                      <NumInput value={fz} onChange={editFz} metric={metric} isFeedPerTooth digits={metric ? 3 : 5} />
                     </Field>
                   )}
                 </>
               )}
               {isDrill && (
-                <Field label="Feed per rev" unit={metric ? "mm/rev" : "in/rev"}>
-                  <NumInput value={ipr} onChange={setIpr} metric={metric} isFeedPerTooth digits={metric ? 3 : 4} />
+                <Field label="Feed per rev" unit={metric ? "mm/rev" : "in/rev"} src={cutSrc("ipr", setIpr)}>
+                  <NumInput value={ipr} onChange={editIpr} metric={metric} isFeedPerTooth digits={metric ? 3 : 4} />
                 </Field>
               )}
             </div>
@@ -2193,6 +2255,18 @@ main{padding:18px 22px;margin:0 auto}
 .field{display:flex;flex-direction:column;gap:4px}
 .field-label{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--label)}
 .field-label em{font-style:normal;color:var(--accent-ink);margin-left:5px;text-transform:none}
+/* provenance tag: where this number came from */
+.field-label{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.src-tag{font-family:'IBM Plex Mono',monospace;font-size:9.5px;font-weight:500;letter-spacing:0;text-transform:none;padding:1px 6px;border-radius:99px;border:1px solid transparent;white-space:nowrap;margin-left:auto}
+.src-tag.mfg{background:#E2F1E8;color:var(--mfg);border-color:#C6E2D2}
+.src-tag.gen{background:var(--info-bg);color:var(--label);border-color:var(--line)}
+.src-tag.geo{background:#EAEEF4;color:#4A6079;border-color:#D3DCE6}
+.src-tag.calc{background:#EFEDF6;color:#5B5378;border-color:#DCD8EA}
+button.src-tag.you{background:#FBF1DC;color:var(--amber);border-color:#E3C589;cursor:pointer;font:inherit;font-family:'IBM Plex Mono',monospace;font-size:9.5px;padding:1px 6px}
+button.src-tag.you:hover{background:#F6E6C4;border-color:var(--amber)}
+/* small "what this actually becomes" line under an input */
+.derived-note{display:block;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--label);margin-top:4px;line-height:1.35}
+.derived-note.clamp{color:var(--amber)}
 .num{font-family:'IBM Plex Mono',monospace;font-size:14px;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink);width:100%}
 .num:disabled{background:var(--bg);color:var(--label)}
 select.num{font-family:'Archivo',sans-serif}
