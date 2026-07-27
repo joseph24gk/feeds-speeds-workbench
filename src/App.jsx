@@ -1089,7 +1089,10 @@ function Tools({ tools, setTools, metric }) {
   const [active, setActive] = useState(null); // job currently searching
   const [lookupErr, setLookupErr] = useState("");
   const [candidates, setCandidates] = useState([]); // finished lookups awaiting review: [{tool, meta}]
-  const [manual, setManual] = useState(null); // manual-entry tool draft
+  const [manual, setManual] = useState(null); // manual-entry tool draft (new tools; renders at top)
+  const [editId, setEditId] = useState(null); // existing tool being edited INLINE (below its row)
+  const candRef = useRef(null); // top stack of finished lookups
+  const [candInView, setCandInView] = useState(true); // hide the "jump to review" FAB while the stack is on screen
   const [importList, setImportList] = useState(null); // [{tool, checked}]
   const [importSkipped, setImportSkipped] = useState([]);
   const [sel, setSel] = useState(() => new Set()); // multi-selected tool ids
@@ -1285,11 +1288,22 @@ function Tools({ tools, setTools, metric }) {
   };
 
   const saveTool = (t) => {
-    setTools((prev) => [...prev.filter((x) => x.id !== t.id), t]);
+    // update in place if it already exists (keeps its row position); else append
+    setTools((prev) => prev.some((x) => x.id === t.id) ? prev.map((x) => (x.id === t.id ? t : x)) : [...prev, t]);
     setCandidates((p) => p.filter((c) => c.tool.id !== t.id));
     setManual(null);
+    setEditId(null);
   };
   const dismissCandidate = (id) => setCandidates((p) => p.filter((c) => c.tool.id !== id));
+
+  // show the floating "jump to review" button only when the candidate stack is scrolled out of view
+  useEffect(() => {
+    const el = candRef.current;
+    if (!el || candidates.length === 0) { setCandInView(true); return; }
+    const obs = new IntersectionObserver(([e]) => setCandInView(e.isIntersecting), { threshold: 0.05 });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [candidates.length]);
 
   return (
     <section className="panel">
@@ -1345,12 +1359,25 @@ function Tools({ tools, setTools, metric }) {
         </div>
       )}
 
-      {candidates.map((c) => (
-        <ToolEditor key={c.tool.id} tool={c.tool} metric={metric}
-          heading={`Found: ${toolLabel(c.tool, metric)} — confirm before saving (${c.meta?.confidence || "?"} confidence)`}
-          sub={c.meta?.noData ? "Tool identified, but no published cutting data found. Generic tables will be used until you add numbers." : "Cutting data below came from the web — sanity-check it against the catalog."}
-          sources={c.meta?.sources} onSave={saveTool} onCancel={() => dismissCandidate(c.tool.id)} />
-      ))}
+      <div ref={candRef}>
+        {candidates.length > 1 && (
+          <div className="bulkbar" style={{ marginTop: 8 }}>
+            <span className="strong">{candidates.length} lookup results ready to review</span>
+            <span className="dim">approve or dismiss each below — no need to hunt through the list</span>
+          </div>
+        )}
+        {candidates.map((c) => (
+          <ToolEditor key={c.tool.id} tool={c.tool} metric={metric}
+            heading={`Found: ${toolLabel(c.tool, metric)} — confirm before saving (${c.meta?.confidence || "?"} confidence)`}
+            sub={c.meta?.noData ? "Tool identified, but no published cutting data found. Generic tables will be used until you add numbers." : "Cutting data below came from the web — sanity-check it against the catalog."}
+            sources={c.meta?.sources} onSave={saveTool} onCancel={() => dismissCandidate(c.tool.id)} />
+        ))}
+      </div>
+      {candidates.length > 0 && !candInView && (
+        <button className="review-fab" onClick={() => candRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+          ↑ {candidates.length} result{candidates.length > 1 ? "s" : ""} ready to review
+        </button>
+      )}
       {manual && (
         <ToolEditor tool={manual} metric={metric} heading="Manual entry" sub="Fill in geometry; add manufacturer cutting data per material group if you have it. Blank groups use generic tables." onSave={saveTool} onCancel={() => setManual(null)} />
       )}
@@ -1406,8 +1433,10 @@ function Tools({ tools, setTools, metric }) {
             <tbody>
               {visible.map((t) => {
                 const state = activeId === t.id ? "active" : queuedIds.has(t.id) ? "queued" : "";
+                const editing = editId === t.id;
                 return (
-                <tr key={t.id} className={sel.has(t.id) ? "row-sel" : ""}>
+                <React.Fragment key={t.id}>
+                <tr className={(sel.has(t.id) ? "row-sel" : "") + (editing ? " row-editing" : "")}>
                   <td className="ck-col"><input type="checkbox" checked={sel.has(t.id)} onChange={() => toggleSel(t.id)} /></td>
                   <td><span className="strong">{toolLabel(t, metric)}</span><br />
                     <span className="dim mono"><BrandIcon name={t.brand} size={13} />{[t.brand, t.pn].filter(Boolean).join(" ")}{t.name && t.series ? " · " + t.name : ""}</span></td>
@@ -1427,10 +1456,20 @@ function Tools({ tools, setTools, metric }) {
                       title={state === "active" ? "Searching the web now…" : state === "queued" ? "Waiting in the lookup queue" : "Search the web for manufacturer cutting data"}>
                       {state === "active" ? "Searching…" : state === "queued" ? "Queued" : "Look up"}
                     </button>
-                    <button className="btn sm" onClick={() => setManual({ ...t })}>Edit</button>
+                    <button className={"btn sm" + (editing ? " queued" : "")} onClick={() => setEditId(editing ? null : t.id)}>{editing ? "Editing" : "Edit"}</button>
                     <button className="btn sm danger" onClick={() => setTools((p) => p.filter((x) => x.id !== t.id))}>Delete</button>
                   </td>
                 </tr>
+                {editing && (
+                  <tr className="edit-row">
+                    <td colSpan={9}>
+                      <ToolEditor tool={t} metric={metric} heading={`Edit ${toolLabel(t, metric)}`}
+                        sub="Changes save in place — your spot in the list is kept."
+                        onSave={saveTool} onCancel={() => setEditId(null)} />
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
               );})}
             </tbody>
           </table>
@@ -2030,6 +2069,13 @@ select.num{font-family:'Archivo',sans-serif}
 @keyframes prog-slide{0%{margin-left:-38%}100%{margin-left:100%}}
 .milestone{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--accent-ink);margin-top:6px}
 .bulkbar{display:flex;gap:8px;align-items:center;background:var(--info-bg);border:1px solid var(--line);border-radius:8px;padding:7px 12px;margin-bottom:8px}
+/* inline tool editing: the editor opens in a full-width row right under the tool */
+tr.row-editing td{background:#FBF4E6}
+.edit-row>td{padding:0 0 6px;background:transparent;border-bottom:1px solid var(--line)}
+.edit-row .card{margin:0 0 6px}
+/* floating "jump to the finished lookups" button — appears only when the stack is scrolled off screen */
+.review-fab{position:fixed;right:20px;bottom:20px;z-index:50;background:var(--accent);color:#fff;border:0;border-radius:99px;font:inherit;font-weight:600;font-size:13px;padding:11px 18px;box-shadow:0 6px 20px rgba(0,0,0,.22);cursor:pointer}
+.review-fab:hover{background:var(--accent-ink)}
 th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
 th.sortable:hover{color:var(--ink)}
 .ck-col{width:28px}
